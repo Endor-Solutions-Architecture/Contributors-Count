@@ -8,7 +8,7 @@ charset-normalizer==2.1.1
 cryptography==43.0.1
 Deprecated==1.2.14
 frozenlist==1.4.1
-github==1.2.7
+GitHub==1.2.7
 idna==3.10
 multidict==6.1.0
 propcache==0.2.0
