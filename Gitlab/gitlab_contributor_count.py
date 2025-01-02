@@ -55,10 +55,10 @@ for group in gl.groups.list(all=True):  # Fetch all groups (pagination handled i
     # Add group contributors to the global list
     all_contributors[group_name] = contributors
 
-# Fetch standalone projects (not associated with any group)
-print("\nAnalyzing standalone projects:")
-standalone_contributors = {}
-for project in gl.projects.list(owned=True, all=True):  # Fetch all projects owned by the user
+# Fetch all projects the user has access to (including membership)
+print("\nAnalyzing all accessible projects:")
+accessible_contributors = {}
+for project in gl.projects.list(membership=True, all=True):  # Fetch all projects the user is a member of
     print(f"  Analyzing project: {project.name}")
 
     # Fetch recent commits for the project
@@ -69,8 +69,8 @@ for project in gl.projects.list(owned=True, all=True):  # Fetch all projects own
             commit_date = datetime.datetime.fromisoformat(commit.created_at.rstrip('Z'))
         except ValueError:
             commit_date = datetime.datetime.strptime(commit.created_at, "%Y-%m-%dT%H:%M:%S.%f%z")
-        if username not in standalone_contributors or commit_date > standalone_contributors[username]['date']:
-            standalone_contributors[username] = {
+        if username not in accessible_contributors or commit_date > accessible_contributors[username]['date']:
+            accessible_contributors[username] = {
                 'date': commit_date,
                 'sha': commit.id,
                 'repo': project.name
@@ -85,7 +85,7 @@ for project in gl.projects.list(owned=True, all=True):  # Fetch all projects own
                 }
 
 # Add standalone project contributors to the global list
-all_contributors["Standalone Projects"] = standalone_contributors
+all_contributors["Standalone Projects"] = accessible_contributors
 
 # Print the results
 for group_name, contributors in all_contributors.items():
