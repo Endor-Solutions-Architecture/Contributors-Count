@@ -8,7 +8,7 @@ auth = Auth.Token(os.getenv("GITHUB_TOKEN"))
 gh = Github(auth=auth)
 
 # Replace with the name of the GitHub organization you want to analyze
-org_name = "Endor-Solutions-Architecture"
+org_name = "endorlabs"
 
 # Get the organization object
 organization = gh.get_organization(org_name)
@@ -19,21 +19,27 @@ contributors = {}
 # Calculate the date 90 days ago
 ninety_days_ago = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)
 
-# Fetch recent events for the organization
-for event in organization.get_events():
-    if event.created_at < ninety_days_ago:
-        break
-    
-    if event.type == "PushEvent":
-        for commit in event.payload['commits']:
-            username = event.actor.login
-            commit_date = event.created_at
-            if username not in contributors or commit_date > contributors[username]['date']:
-                contributors[username] = {
-                    'date': commit_date,
-                    'sha': commit['sha'],
-                    'repo': event.repo.name
-                }
+# Fetch all repositories (including private)
+for repo in organization.get_repos():
+    print(f"Processing repository: {repo.full_name}")
+
+    # Get commits for the repository
+    try:
+        commits = repo.get_commits(since=ninety_days_ago)
+        for commit in commits:
+            if commit.author is not None:  # Only consider commits with an associated GitHub user
+                username = commit.author.login
+                commit_date = commit.commit.author.date
+
+                # Store the most recent commit for each contributor
+                if username not in contributors or commit_date > contributors[username]['date']:
+                    contributors[username] = {
+                        'date': commit_date,
+                        'sha': commit.sha,
+                        'repo': repo.full_name
+                    }
+    except GithubException as e:
+        print(f"Error processing commits for repository {repo.full_name}: {e}")
 
 # Print the number of contributing developers in the last 90 days
 print(f"\nNumber of contributing developers in {org_name} in the last 90 days: {len(contributors)}")
