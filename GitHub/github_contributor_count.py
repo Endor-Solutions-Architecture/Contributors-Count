@@ -25,19 +25,22 @@ for repo in organization.get_repos():
 
     # Get commits for the repository
     try:
+        # The GitHub API's since parameter only filters commits by their author date (the date the commit was authored) and not the pushed date. 
+        # If a commit was authored before 90 days but pushed recently, it will still be included in the results.
         commits = repo.get_commits(since=ninety_days_ago)
         for commit in commits:
             if commit.author is not None:  # Only consider commits with an associated GitHub user
                 username = commit.author.login
                 commit_date = commit.commit.author.date
-
-                # Store the most recent commit for each contributor
-                if username not in contributors or commit_date > contributors[username]['date']:
-                    contributors[username] = {
-                        'date': commit_date,
-                        'sha': commit.sha,
-                        'repo': repo.full_name
-                    }
+                # Additional filter to include only commits authored 90 days ago
+                if commit_date >= ninety_days_ago: 
+                    # Store the most recent commit for each contributor
+                    if username not in contributors or commit_date > contributors[username]['date']:
+                        contributors[username] = {
+                            'date': commit_date,
+                            'sha': commit.sha,
+                            'repo': repo.full_name
+                        }
     except GithubException as e:
         print(f"Error processing commits for repository {repo.full_name}: {e}")
 

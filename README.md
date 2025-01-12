@@ -4,8 +4,15 @@
 
 - Counts the number of contributing developers within the last 90 days of a given GitHub Organization
 - Prints the name of each GitHub user, along with a link to a commit they've given in the last 90 days
-- A GitHub PAT is required for authentication. The permissions needed are shown below, and we recommend to use fine-grained tokens:
-<img width="895" alt="image" src="https://github.com/user-attachments/assets/7803c2f0-1631-45c3-9f61-8984ab11cc8f">
+- A GitHub PAT is required for authentication. The permissions needed are shown below, and we recommend to use fine-grained tokens
+    - Organization Permissions
+        - Members: Read-only
+    - Repository Permissions
+        - Metadata: Read-only
+        - Contents: Read-only
+        - Commits: Read-only
+    - Acoount Permissions
+        - Email addresses: Read-only
 
 ### Running the script:
 
