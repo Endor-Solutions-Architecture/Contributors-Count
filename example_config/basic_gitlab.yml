@@ -1,0 +1,10 @@
+# Git provider configuration
+provider:
+  type: gitlab
+  org: Inkscape
+
+# Repository filtering
+repositories:
+  include:
+    - pattern: "*"
+

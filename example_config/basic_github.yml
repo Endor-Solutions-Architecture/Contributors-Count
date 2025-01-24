@@ -1,0 +1,10 @@
+# Git provider configuration
+provider:
+  type: github
+  org: Endor-Solutions-Architecture
+
+# Repository filtering
+repositories:
+  include:
+    - pattern: "*"
+

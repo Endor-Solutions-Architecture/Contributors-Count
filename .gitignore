@@ -1,2 +1,14 @@
-.venv/
+.DS_Store
+.vscode/
+
+# Environments
+.env
+.venv
+env/
 venv/
+
+# Script output
+last_run.log
+output.json
+
+__pycache__/

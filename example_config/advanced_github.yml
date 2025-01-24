@@ -1,0 +1,38 @@
+# Git provider configuration
+provider:
+  type: github  # or gitlab
+  url: https://api.github.com  # optional, for self-hosted instances
+  org: Endor-Solutions-Architecture
+
+# Repository filtering
+repositories:
+  include:
+    - pattern: "*"
+  
+  exclude:
+    - pattern: "csv_*"
+    - pattern: "*-test"
+    - exact: "Rego-Policy-Library"
+
+# Contributor filtering
+contributors:
+  exclude:
+    # Bot and service account patterns
+    - pattern: "*-bot"      # Other bot naming patterns
+    - pattern: "jenkins-*"  # CI/CD service accounts
+    
+    # Specific usernames
+    - users:
+        - "endor-matt"
+        - "dependabot"
+        - "renovate"
+    
+    # Email patterns
+    - emails:
+        - "*-bot@*"
+        - "noreply@github.com"
+    
+    # Domain-based exclusions
+    - domains:
+        - "github.com"
+        - "bot.service.com"
