@@ -1,6 +1,6 @@
-# GitHub Contributors 90-Day Rolling Average
+# GitHub Contributors in the last 90 days
 
-A CLI tool to calculate the number of unique contributing developers in a GitHub organization over a rolling 90-day window.
+A CLI tool to calculate the number of unique contributing developers in a GitHub organization over the last 90 days.
 
 ## Features
 
@@ -116,3 +116,4 @@ View all available options:
 ```bash
 python github_contributors_90d.py --help
 ```
+
