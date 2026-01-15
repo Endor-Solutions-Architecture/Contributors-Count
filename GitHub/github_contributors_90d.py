@@ -155,7 +155,8 @@ def fetch_commits(client: GitHubClient, repo_full_name: str, since: str, until: 
 @click.option('--max-repos', type=int, help='Limit the number of repositories to process (for testing/large orgs).')
 @click.option('--list-contributors', is_flag=True, help='List individual contributors and their emails.')
 @click.option('--default-branch-only', is_flag=True, help='Only count commits from each repository\'s default branch.')
-def main(org, token, base_url, output_format, max_repos, list_contributors, default_branch_only):
+@click.option('--exclude-bots', is_flag=True, help='Exclude bot accounts from the contributor count.')
+def main(org, token, base_url, output_format, max_repos, list_contributors, default_branch_only, exclude_bots):
     """
     Calculate unique contributors for a GitHub Org over the last 90 days.
     """
@@ -224,6 +225,17 @@ def main(org, token, base_url, output_format, max_repos, list_contributors, defa
                     
                     if author and 'login' in author:
                         login = author['login']
+                        author_type = author.get('type', 'User')
+                        
+                        # Skip bots if --exclude-bots is enabled
+                        if exclude_bots:
+                            # Check if GitHub identifies this as a Bot
+                            if author_type == 'Bot':
+                                continue
+                            # Check for [bot] suffix in username (case-insensitive)
+                            if login.lower().endswith('[bot]'):
+                                continue
+                        
                         email = commit_author_info.get('email')
                         
                         if login not in contributors_map:
@@ -246,6 +258,7 @@ def main(org, token, base_url, output_format, max_repos, list_contributors, defa
             "org": org,
             "scan_date": now.strftime('%Y-%m-%d'),
             "default_branch_only": default_branch_only,
+            "exclude_bots": exclude_bots,
             "contributors_90d": total_contributors
         }
         
@@ -262,6 +275,7 @@ def main(org, token, base_url, output_format, max_repos, list_contributors, defa
         click.echo(f"Scan Date: {now.strftime('%Y-%m-%d')}")
         click.echo(f"Repositories scanned: {repo_count}")
         click.echo(f"Default branch only: {'Yes' if default_branch_only else 'No'}")
+        click.echo(f"Bots excluded: {'Yes' if exclude_bots else 'No'}")
         click.echo("-" * 40)
         click.echo(f"Contributors in last 90 days: {total_contributors}")
         

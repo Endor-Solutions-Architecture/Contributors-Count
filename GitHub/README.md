@@ -81,6 +81,18 @@ python github_contributors_90d.py --org google --default-branch-only
 
 This is useful when you want to exclude contributors who only have commits on feature branches that haven't been merged yet.
 
+### Exclude Bots
+
+To exclude bot accounts from the contributor count:
+
+```bash
+python github_contributors_90d.py --org google --exclude-bots
+```
+
+This filters out:
+- GitHub App bots (accounts with `type: "Bot"` in the API)
+- Accounts with `[bot]` suffix in their username
+
 ### JSON Output
 
 For integration with other tools, use the JSON format:
@@ -95,6 +107,7 @@ python github_contributors_90d.py --org google --format json
   "org": "google",
   "scan_date": "2025-12-02",
   "default_branch_only": false,
+  "exclude_bots": false,
   "contributors_90d": 450
 }
 ```

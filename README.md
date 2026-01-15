@@ -26,6 +26,7 @@
 - `--org` / `-o`: GitHub organization name (required)
 - `--token` / `-t`: GitHub PAT (overrides `GITHUB_TOKEN` env var)
 - `--default-branch-only`: Only count commits from each repository's default branch
+- `--exclude-bots`: Exclude bot accounts from the contributor count
 - `--list-contributors`: List individual contributors and their emails
 - `--format`: Output format (`text` or `json`)
 - `--max-repos`: Limit number of repositories to process
