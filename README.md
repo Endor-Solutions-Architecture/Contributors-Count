@@ -3,23 +3,32 @@
 ## Github
 
 - Counts the number of contributing developers within the last 90 days of a given GitHub Organization
-- Prints the name of each GitHub user, along with a link to a commit they've given in the last 90 days
-- A GitHub PAT is required for authentication. The permissions needed are shown below, and we recommend to use fine-grained tokens
-    - Organization Permissions
-        - Members: Read-only
-    - Repository Permissions
-        - Metadata: Read-only
-        - Contents: Read-only
-        - Commits: Read-only
-    - Acoount Permissions
-        - Email addresses: Read-only
+- Scans all branches by default to capture contributors on feature branches (not just merged code)
+- Supports filtering to only count commits from each repository's default branch with `--default-branch-only`
+- Prints the name of each GitHub user along with their email addresses
+- A GitHub PAT is recommended for authentication (required for private orgs). The permissions needed are shown below:
+    - **Fine-grained tokens (recommended):**
+        - Repository Permissions
+            - Metadata: Read-only
+            - Contents: Read-only
+        - Organization Permissions
+            - Members: Read-only
 
 ### Running the script:
 
 - Create a venv with `python3 -m venv .venv` in the directory titled `GitHub`, and activate with `source .venv/bin/activate`
 - Install dependencies with `pip3 install -r requirements.txt`
-- Edit the org name for the variable called `org-name` to the GitHub organization of your choosing
-- Run with the command `python3 github_contributor_count.py`
+- Set your GitHub token: `export GITHUB_TOKEN=your_token_here`
+- Run with the command `python3 github_contributors_90d.py --org <org-name>`
+
+### Options:
+
+- `--org` / `-o`: GitHub organization name (required)
+- `--token` / `-t`: GitHub PAT (overrides `GITHUB_TOKEN` env var)
+- `--default-branch-only`: Only count commits from each repository's default branch
+- `--list-contributors`: List individual contributors and their emails
+- `--format`: Output format (`text` or `json`)
+- `--max-repos`: Limit number of repositories to process
 
 ## Gitlab
 

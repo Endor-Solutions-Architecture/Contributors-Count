@@ -117,9 +117,29 @@ def fetch_repos(client: GitHubClient, org: str, max_repos: Optional[int] = None)
     except Exception as e:
         raise Exception(f"Failed to fetch repos for org '{org}': {e}")
 
-def fetch_commits(client: GitHubClient, repo_full_name: str, since: str, until: str) -> Generator[Dict, None, None]:
-    """Yields commits for a repository within the time window."""
+def fetch_branches(client: GitHubClient, repo_full_name: str) -> List[str]:
+    """Fetches all branch names for a repository."""
+    branches = []
+    try:
+        for branch in client.get_paginated(f"/repos/{repo_full_name}/branches"):
+            branches.append(branch['name'])
+    except Exception as e:
+        click.echo(f"Warning: Failed to fetch branches for {repo_full_name}: {e}", err=True)
+    return branches
+
+def fetch_commits(client: GitHubClient, repo_full_name: str, since: str, until: str, sha: Optional[str] = None) -> Generator[Dict, None, None]:
+    """Yields commits for a repository within the time window.
+    
+    Args:
+        client: GitHub API client
+        repo_full_name: Full repository name (owner/repo)
+        since: ISO 8601 timestamp for start of window
+        until: ISO 8601 timestamp for end of window
+        sha: Optional branch name or SHA to filter commits (e.g., 'main', 'master')
+    """
     params = {'since': since, 'until': until}
+    if sha:
+        params['sha'] = sha
     try:
         for commit in client.get_paginated(f"/repos/{repo_full_name}/commits", params=params):
             yield commit
@@ -134,7 +154,8 @@ def fetch_commits(client: GitHubClient, repo_full_name: str, since: str, until: 
 @click.option('--format', 'output_format', type=click.Choice(['text', 'json']), default='text', help='Output format.')
 @click.option('--max-repos', type=int, help='Limit the number of repositories to process (for testing/large orgs).')
 @click.option('--list-contributors', is_flag=True, help='List individual contributors and their emails.')
-def main(org, token, base_url, output_format, max_repos, list_contributors):
+@click.option('--default-branch-only', is_flag=True, help='Only count commits from each repository\'s default branch.')
+def main(org, token, base_url, output_format, max_repos, list_contributors, default_branch_only):
     """
     Calculate unique contributors for a GitHub Org over the last 90 days.
     """
@@ -158,6 +179,8 @@ def main(org, token, base_url, output_format, max_repos, list_contributors):
 
     # Map login -> Set of emails
     contributors_map: Dict[str, Set[str]] = {}
+    # Track seen commit SHAs to avoid double-counting across branches
+    seen_commit_shas: Set[str] = set()
     repo_count = 0
     
     if output_format == 'text':
@@ -169,30 +192,48 @@ def main(org, token, base_url, output_format, max_repos, list_contributors):
         for repo in repos:
             repo_count += 1
             repo_name = repo['full_name']
+            default_branch = repo.get('default_branch')
+            
+            # Determine which branches to scan
+            if default_branch_only:
+                branches_to_scan = [default_branch] if default_branch else []
+                branch_info = f" (branch: {default_branch})"
+            else:
+                branches_to_scan = fetch_branches(client, repo_name)
+                branch_info = f" (all {len(branches_to_scan)} branches)"
+            
             if output_format == 'text':
-                click.echo(f"Scanning {repo_name}...", nl=False)
+                click.echo(f"Scanning {repo_name}{branch_info}...", nl=False)
                 sys.stdout.flush()
 
-            commits = fetch_commits(client, repo_name, since_iso, until_iso)
-            
             commit_count = 0
-            for commit in commits:
-                commit_count += 1
-                author = commit.get('author')
-                commit_author_info = commit.get('commit', {}).get('author', {})
+            for branch in branches_to_scan:
+                commits = fetch_commits(client, repo_name, since_iso, until_iso, sha=branch)
                 
-                if author and 'login' in author:
-                    login = author['login']
-                    email = commit_author_info.get('email')
+                for commit in commits:
+                    commit_sha = commit.get('sha')
                     
-                    if login not in contributors_map:
-                        contributors_map[login] = set()
+                    # Skip if we've already processed this commit (from another branch)
+                    if commit_sha in seen_commit_shas:
+                        continue
+                    seen_commit_shas.add(commit_sha)
                     
-                    if email:
-                        contributors_map[login].add(email)
+                    commit_count += 1
+                    author = commit.get('author')
+                    commit_author_info = commit.get('commit', {}).get('author', {})
+                    
+                    if author and 'login' in author:
+                        login = author['login']
+                        email = commit_author_info.get('email')
+                        
+                        if login not in contributors_map:
+                            contributors_map[login] = set()
+                        
+                        if email:
+                            contributors_map[login].add(email)
             
             if output_format == 'text':
-                click.echo(f" Done. ({commit_count} commits fetched)")
+                click.echo(f" Done. ({commit_count} unique commits fetched)")
 
     except Exception as e:
         click.echo(f"\nError: {e}", err=True)
@@ -204,6 +245,7 @@ def main(org, token, base_url, output_format, max_repos, list_contributors):
         json_output = {
             "org": org,
             "scan_date": now.strftime('%Y-%m-%d'),
+            "default_branch_only": default_branch_only,
             "contributors_90d": total_contributors
         }
         
@@ -219,6 +261,7 @@ def main(org, token, base_url, output_format, max_repos, list_contributors):
         click.echo(f"Organization: {org}")
         click.echo(f"Scan Date: {now.strftime('%Y-%m-%d')}")
         click.echo(f"Repositories scanned: {repo_count}")
+        click.echo(f"Default branch only: {'Yes' if default_branch_only else 'No'}")
         click.echo("-" * 40)
         click.echo(f"Contributors in last 90 days: {total_contributors}")
         

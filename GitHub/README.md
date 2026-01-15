@@ -5,6 +5,8 @@ A CLI tool to calculate the number of unique contributing developers in a GitHub
 ## Features
 
 - **90-Day Count**: Calculates unique contributors for the last 90 days.
+- **All Branches by Default**: Scans all branches in each repository to capture contributors on feature branches.
+- **Default Branch Only Mode**: Optionally restrict scanning to only the default branch (e.g., `main`, `master`).
 - **Detailed Listing**: Optionally lists contributor handles and emails.
 - **Output Formats**: Human-readable text or JSON for automation.
 - **Secure**: Supports Personal Access Tokens (PAT) for private organizations.
@@ -69,6 +71,16 @@ To see the list of individual contributors and their emails:
 python github_contributors_90d.py --org google --list-contributors
 ```
 
+### Default Branch Only
+
+By default, the script counts contributors from all branches. To only count commits from each repository's default branch (e.g., `main` or `master`):
+
+```bash
+python github_contributors_90d.py --org google --default-branch-only
+```
+
+This is useful when you want to exclude contributors who only have commits on feature branches that haven't been merged yet.
+
 ### JSON Output
 
 For integration with other tools, use the JSON format:
@@ -82,6 +94,7 @@ python github_contributors_90d.py --org google --format json
 {
   "org": "google",
   "scan_date": "2025-12-02",
+  "default_branch_only": false,
   "contributors_90d": 450
 }
 ```
@@ -96,9 +109,6 @@ The required permissions for your Personal Access Token (PAT) depend on the orga
 - **No scopes required.** A token with no scopes selected is sufficient to increase your rate limit.
 
 ### Private Organizations
-You need a **Classic PAT** with the following scopes:
-- **`read:org`**: To list the organization's repositories.
-- **`repo`**: To read commits from private repositories.
 
 **Fine-grained PATs:**
 If using a Fine-grained token, you do not select "scopes". Instead, select the organization and grant these specific permissions:
