@@ -1,262 +1,376 @@
 #!/usr/bin/env python3
 """
-Bitbucket Server (Data Center) Contributors Count Tool
+Bitbucket Server / Data Center Contributors Count Tool
 
-Purpose:
-  Calculates the number of unique contributing developers in a Bitbucket Server Project
-  over the last 90 days.
-
-Requirements:
-  Python 3.6+
-  Dependencies: requests, click
-
-Installation:
-  pip install -r requirements.txt
+Calculates the number of unique contributing developers in a Bitbucket
+Server Project over the last 90 days.
 
 Usage:
-  # Basic usage (requires credentials)
-  export BITBUCKET_SERVER_URL=https://bitbucket.mycompany.com
   export BITBUCKET_USER=myuser
   export BITBUCKET_PASSWORD=mypassword
-  python bitbucket_server_contributors_90d.py --project MYPROJ
+  python bitbucket_server_contributors_90d.py \
+      --project MYPROJ --url https://bitbucket.mycompany.com
 
-  # JSON output
-  python bitbucket_server_contributors_90d.py --project MYPROJ --format json
-
-Token Scopes:
-  - Project/Repo Read permissions
+Token permissions:
+  Project / Repository Read
 """
 
 import os
+import re
 import sys
 import json
-import datetime
 import time
-from typing import Optional, Dict, Any, Set, Generator
+import datetime
+from typing import Optional, Dict, Any, Set, List, Tuple, Generator
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import click
 
+# ---------------------------------------------------------------------------
 # Constants
+# ---------------------------------------------------------------------------
 ENV_VAR_URL = "BITBUCKET_SERVER_URL"
 ENV_VAR_USER = "BITBUCKET_USER"
 ENV_VAR_PASSWORD = "BITBUCKET_PASSWORD"
+REQUEST_TIMEOUT: Tuple[int, int] = (10, 30)
+PAGE_LIMIT = 100
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _sanitize(text: str, max_len: int = 300) -> str:
+    if not text:
+        return "Unknown error"
+    text = re.sub(r"://[^@/]+@", "://***@", text)
+    return text[:max_len]
+
+
+def _elapsed(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    return f"{m}m {s}s" if m else f"{s}s"
+
+
+def _summary_box(title: str, rows: List[Tuple[str, str]],
+                 result_label: str, result_value: str) -> None:
+    w = 48
+    click.echo()
+    click.echo("=" * w)
+    click.echo(f"  {title}")
+    click.echo("=" * w)
+    for label, value in rows:
+        click.echo(f"  {label:<26}{value}")
+    click.echo("-" * w)
+    click.echo(f"  {result_label:<26}{result_value}")
+    click.echo("=" * w)
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+class ApiError(Exception):
+    def __init__(self, status_code: int, message: str) -> None:
+        self.status_code = status_code
+        super().__init__(f"HTTP {status_code}: {_sanitize(message)}")
+
+
+# ---------------------------------------------------------------------------
+# Client
+# ---------------------------------------------------------------------------
 
 class BitbucketServerClient:
-    def __init__(self, base_url: str, user: str, password: str):
-        self.base_url = base_url.rstrip('/')
-        self.user = user
-        self.password = password
-        self.session = requests.Session()
-        
-        if self.user and self.password:
-            self.session.auth = (self.user, self.password)
+    """Bitbucket Server REST API client with retry and rate-limit support."""
 
-    def _request(self, method: str, endpoint: str, params: Dict = None) -> Any:
-        url = f"{self.base_url}{endpoint}"
+    def __init__(self, base_url: str, user: str, password: str) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._session = requests.Session()
+
+        if user and password:
+            self._session.auth = (user, password)
+
+        self._session.headers["User-Agent"] = "contributors-count/1.0"
+
+        retry = Retry(
+            total=3, backoff_factor=1,
+            status_forcelist=[500, 502, 503, 504],
+            allowed_methods=["GET"], raise_on_status=False,
+        )
+        adapter = HTTPAdapter(
+            max_retries=retry, pool_connections=10, pool_maxsize=10,
+        )
+        self._session.mount("https://", adapter)
+        self._session.mount("http://", adapter)
+
+    def __repr__(self) -> str:
+        return (f"BitbucketServerClient(base_url={self._base_url!r}, "
+                f"authenticated={self._session.auth is not None})")
+
+    # -- Core request --------------------------------------------------------
+
+    def _get(self, endpoint: str,
+             params: Optional[Dict[str, Any]] = None) -> requests.Response:
+        url = f"{self._base_url}{endpoint}"
         while True:
-            response = self.session.request(method, url, params=params)
-            
-            # Handle Rate Limiting (if applicable, usually less common on-prem)
-            if response.status_code == 429:
-                retry_after = int(response.headers.get('Retry-After', 60))
-                click.echo(f"Rate limit exceeded. Sleeping for {retry_after} seconds...", err=True)
+            try:
+                resp = self._session.get(
+                    url, params=params, timeout=REQUEST_TIMEOUT,
+                )
+            except requests.ConnectionError:
+                raise ApiError(
+                    0, "Connection failed. Check network and --url.",
+                )
+            except requests.Timeout:
+                raise ApiError(
+                    0, f"Request timed out after {REQUEST_TIMEOUT[1]}s.",
+                )
+
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", 60))
+                click.echo(
+                    f"  Rate limit hit. Waiting {retry_after}s ...",
+                    err=True,
+                )
                 time.sleep(retry_after)
                 continue
 
-            if response.status_code != 200:
+            if resp.status_code != 200:
                 try:
-                    data = response.json()
-                    message = data.get('errors', [{}])[0].get('message', response.text)
-                except:
-                    message = response.text
-                raise Exception(f"Bitbucket Server API Error ({response.status_code}): {message}")
+                    errors = resp.json().get("errors", [])
+                    msg = errors[0].get("message", resp.text[:300]) if errors else resp.text[:300]
+                except (ValueError, KeyError, IndexError):
+                    msg = resp.text[:300]
+                raise ApiError(resp.status_code, msg)
 
-            return response
+            return resp
 
-    def get_paginated(self, endpoint: str, params: Dict = None) -> Generator[Dict, None, None]:
+    # -- Paginated GET (offset-based) ----------------------------------------
+
+    def get_paginated(self, endpoint: str,
+                      params: Optional[Dict[str, Any]] = None,
+                      ) -> Generator[Dict[str, Any], None, None]:
         if params is None:
             params = {}
-        
-        # Bitbucket Server pagination uses 'start' (offset) and 'limit'
-        # Response contains 'isLastPage', 'nextPageStart', 'values'
-        
+        params["limit"] = PAGE_LIMIT
         start = 0
-        limit = 100 # Default limit
-        params['limit'] = limit
-        
+
         while True:
-            params['start'] = start
-            response = self._request('GET', endpoint, params=params)
-            data = response.json()
-            
-            items = data.get('values', [])
-            for item in items:
-                yield item
-            
-            if data.get('isLastPage', True):
+            params["start"] = start
+            resp = self._get(endpoint, params=params)
+            data = resp.json()
+
+            items = data.get("values", [])
+            yield from items
+
+            if data.get("isLastPage", True):
                 break
-            
-            next_start = data.get('nextPageStart')
-            if next_start:
-                start = next_start
-            else:
-                # Fallback if nextPageStart is missing but isLastPage is false
-                start += len(items)
 
-def fetch_repos(client: BitbucketServerClient, project_key: str) -> Generator[Dict, None, None]:
-    """Yields repositories for the project."""
-    try:
-        for repo in client.get_paginated(f"/rest/api/1.0/projects/{project_key}/repos"):
-            yield repo
-    except Exception as e:
-        raise Exception(f"Failed to fetch repos for project '{project_key}': {e}")
+            next_start = data.get("nextPageStart")
+            start = next_start if next_start is not None else start + len(items)
 
-def fetch_commits(client: BitbucketServerClient, project_key: str, repo_slug: str, since_timestamp_ms: int) -> Generator[Dict, None, None]:
-    """Yields commits for a repository since a timestamp (ms)."""
-    # Bitbucket Server commits API doesn't strictly support 'since' date filtering in the base endpoint easily
-    # without iterating. However, we can iterate until we hit a commit older than the date.
-    # Commits are returned in reverse chronological order by default.
-    
-    endpoint = f"/rest/api/1.0/projects/{project_key}/repos/{repo_slug}/commits"
-    
+
+# ---------------------------------------------------------------------------
+# Data fetching
+# ---------------------------------------------------------------------------
+
+def fetch_repos(client: BitbucketServerClient,
+                project_key: str) -> List[Dict[str, Any]]:
+    repos: List[Dict[str, Any]] = []
+    endpoint = f"/rest/api/1.0/projects/{project_key}/repos"
+    for repo in client.get_paginated(endpoint):
+        repos.append(repo)
+    return repos
+
+
+def _fetch_commits(
+    client: BitbucketServerClient,
+    project_key: str,
+    repo_slug: str,
+    since_timestamp_ms: int,
+) -> Generator[Dict[str, Any], None, None]:
+    """Yield commits newer than *since_timestamp_ms*.
+
+    Bitbucket Server returns commits in reverse-chronological order.
+    We stop iterating as soon as we see a commit older than our window.
+    """
+    endpoint = (
+        f"/rest/api/1.0/projects/{project_key}/repos/{repo_slug}/commits"
+    )
+    start = 0
+
     try:
-        # We need to manually handle pagination here to stop early
-        start = 0
-        limit = 100
-        
         while True:
-            params = {'start': start, 'limit': limit}
-            response = client._request('GET', endpoint, params=params)
-            data = response.json()
-            
-            items = data.get('values', [])
+            params = {"start": start, "limit": PAGE_LIMIT}
+            resp = client._get(endpoint, params=params)
+            data = resp.json()
+
+            items = data.get("values", [])
             if not items:
                 break
-                
+
             for commit in items:
-                commit_ts = commit.get('authorTimestamp', 0)
-                if commit_ts < since_timestamp_ms:
-                    return # Stop iterating, we reached older commits
+                if commit.get("authorTimestamp", 0) < since_timestamp_ms:
+                    return  # older than window
                 yield commit
-            
-            if data.get('isLastPage', True):
+
+            if data.get("isLastPage", True):
                 break
-            
-            next_start = data.get('nextPageStart')
-            if next_start:
-                start = next_start
-            else:
-                start += len(items)
-                
-    except Exception as e:
-        click.echo(f"Warning: Failed to fetch commits for repo {repo_slug}: {e}", err=True)
+
+            next_start = data.get("nextPageStart")
+            start = (
+                next_start if next_start is not None else start + len(items)
+            )
+
+    except ApiError as exc:
+        click.echo(
+            f"  Warning: commits skipped for {repo_slug} ({exc})",
+            err=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 @click.command()
-@click.option('--project', '-p', required=True, help='Bitbucket Project Key.')
-@click.option('--url', required=True, help='Bitbucket Server Base URL (e.g. https://bitbucket.mycompany.com).')
-@click.option('--user', '-u', help='Username. Overrides BITBUCKET_USER env var.')
-@click.option('--password', '-pw', help='Password/Token. Overrides BITBUCKET_PASSWORD env var.')
-@click.option('--format', 'output_format', type=click.Choice(['text', 'json']), default='text', help='Output format.')
-@click.option('--list-contributors', is_flag=True, help='List individual contributors and their emails.')
-def main(project, url, user, password, output_format, list_contributors):
-    """
-    Calculate unique contributors for a Bitbucket Server Project over the last 90 days.
-    """
+@click.option("--project", "-p", required=True,
+              help="Bitbucket Project Key.")
+@click.option("--url", required=True,
+              help="Bitbucket Server base URL.")
+@click.option("--user", "-u",
+              help="Username (overrides BITBUCKET_USER env var).")
+@click.option("--password", "-pw",
+              help="Password/Token (overrides BITBUCKET_PASSWORD env var).")
+@click.option("--format", "output_format",
+              type=click.Choice(["text", "json"]), default="text",
+              help="Output format.")
+@click.option("--list-contributors", is_flag=True,
+              help="Include per-contributor detail in output.")
+def main(
+    project: str,
+    url: str,
+    user: Optional[str],
+    password: Optional[str],
+    output_format: str,
+    list_contributors: bool,
+) -> None:
+    """Count unique contributors for a Bitbucket Server Project over the last 90 days."""
+    t0 = time.monotonic()
+
     if not user:
         user = os.environ.get(ENV_VAR_USER)
     if not password:
         password = os.environ.get(ENV_VAR_PASSWORD)
 
     if not user or not password:
-        click.echo("Error: BITBUCKET_USER and BITBUCKET_PASSWORD are required.", err=True)
+        click.echo(
+            "Error: BITBUCKET_USER and BITBUCKET_PASSWORD are required.",
+            err=True,
+        )
         sys.exit(1)
 
     client = BitbucketServerClient(url, user, password)
 
-    # Calculate window (90 days)
     now = datetime.datetime.now(datetime.timezone.utc)
-    days = 90
-    start_date = now - datetime.timedelta(days=days)
-    
-    # Bitbucket Server uses milliseconds timestamp
-    since_timestamp_ms = int(start_date.timestamp() * 1000)
+    since_timestamp_ms = int(
+        (now - datetime.timedelta(days=90)).timestamp() * 1000
+    )
 
-    contributors_map: Dict[str, Set[str]] = {}
-    repo_count = 0
-    
-    if output_format == 'text':
-        click.echo(f"Fetching repositories for {project}...")
+    # -- Fetch repos ---------------------------------------------------------
+    if output_format == "text":
+        click.echo(f"Fetching repositories for project {project} ...")
 
     try:
         repos = fetch_repos(client, project)
-        
-        for repo in repos:
-            repo_count += 1
-            repo_name = repo['name']
-            repo_slug = repo['slug']
-            
-            if output_format == 'text':
-                click.echo(f"Scanning {repo_name}...", nl=False)
-                sys.stdout.flush()
-
-            commits = fetch_commits(client, project, repo_slug, since_timestamp_ms)
-            
-            commit_count = 0
-            for commit in commits:
-                commit_count += 1
-                author = commit.get('author', {})
-                email = author.get('emailAddress')
-                name = author.get('name')
-                
-                # Use email as unique identifier
-                identifier = email if email else name
-                
-                if identifier:
-                    if identifier not in contributors_map:
-                        contributors_map[identifier] = set()
-                    if email:
-                        contributors_map[identifier].add(email)
-            
-            if output_format == 'text':
-                click.echo(f" Done. ({commit_count} commits)")
-
-    except Exception as e:
-        click.echo(f"\nError: {e}", err=True)
+    except ApiError as exc:
+        click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 
+    total_repos = len(repos)
+    if output_format == "text":
+        click.echo(f"  Found {total_repos} repositories.\n")
+
+    # -- Scan repos ----------------------------------------------------------
+    contributors_map: Dict[str, Set[str]] = {}
+    total_commits = 0
+
+    for idx, repo in enumerate(repos, 1):
+        repo_name: str = repo["name"]
+        repo_slug: str = repo["slug"]
+
+        if output_format == "text":
+            pad = len(str(total_repos))
+            click.echo(
+                f"  [{idx:>{pad}}/{total_repos}] {repo_name} ...",
+                nl=False,
+            )
+            sys.stdout.flush()
+
+        commit_count = 0
+        for commit in _fetch_commits(
+            client, project, repo_slug, since_timestamp_ms,
+        ):
+            commit_count += 1
+            author = commit.get("author", {})
+            email: Optional[str] = author.get("emailAddress")
+            name: Optional[str] = author.get("name")
+
+            identifier = email if email else name
+            if identifier:
+                if identifier not in contributors_map:
+                    contributors_map[identifier] = set()
+                if email:
+                    contributors_map[identifier].add(email)
+
+        total_commits += commit_count
+        if output_format == "text":
+            click.echo(f" {commit_count:,} commits")
+
+    elapsed = time.monotonic() - t0
     total_contributors = len(contributors_map)
 
-    if output_format == 'json':
-        json_output = {
+    # -- Output --------------------------------------------------------------
+    if output_format == "json":
+        payload: Dict[str, Any] = {
             "project": project,
-            "scan_date": now.strftime('%Y-%m-%d'),
-            "contributors_90d": total_contributors
+            "server_url": url,
+            "scan_date": now.strftime("%Y-%m-%d"),
+            "repositories_scanned": total_repos,
+            "elapsed_seconds": round(elapsed, 1),
+            "contributors_90d": total_contributors,
         }
-        
         if list_contributors:
-            json_output["contributors_details"] = [
-                {"identifier": ident, "emails": sorted(list(emails))}
+            payload["contributors_details"] = [
+                {"identifier": ident, "emails": sorted(emails)}
                 for ident, emails in sorted(contributors_map.items())
             ]
-            
-        click.echo(json.dumps(json_output, indent=2))
+        click.echo(json.dumps(payload, indent=2))
     else:
-        click.echo("\n" + "="*40)
-        click.echo(f"Project: {project}")
-        click.echo(f"Scan Date: {now.strftime('%Y-%m-%d')}")
-        click.echo(f"Repositories scanned: {repo_count}")
-        click.echo("-" * 40)
-        click.echo(f"Contributors in last 90 days: {total_contributors}")
-        
-        if list_contributors:
-            click.echo("-" * 40)
-            click.echo("Contributors:")
-            for ident in sorted(contributors_map.keys()):
-                emails = ", ".join(sorted(contributors_map[ident]))
-                click.echo(f"  - {ident} ({emails})")
-                
-        click.echo("="*40)
+        rows: List[Tuple[str, str]] = [
+            ("Project:", project),
+            ("Server:", url),
+            ("Scan Date:", now.strftime("%Y-%m-%d")),
+            ("Repositories Scanned:", str(total_repos)),
+            ("Total Commits:", f"{total_commits:,}"),
+            ("Elapsed:", _elapsed(elapsed)),
+        ]
+        _summary_box(
+            "Bitbucket Server Contributors - 90 Day",
+            rows,
+            "Unique Contributors:", str(total_contributors),
+        )
 
-if __name__ == '__main__':
+        if list_contributors:
+            click.echo("\n  Contributors:")
+            for ident in sorted(contributors_map):
+                emails_str = (
+                    ", ".join(sorted(contributors_map[ident])) or "N/A"
+                )
+                click.echo(f"    {ident:<30} {emails_str}")
+            click.echo()
+
+
+if __name__ == "__main__":
     main()
