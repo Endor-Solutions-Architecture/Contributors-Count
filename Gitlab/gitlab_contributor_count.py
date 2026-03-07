@@ -1,106 +1,227 @@
-import gitlab
+#!/usr/bin/env python3
+"""
+GitLab Contributors Count Tool
+
+Purpose:
+  Calculates the number of unique contributing developers across all accessible
+  GitLab groups and projects over the last 90 days.
+
+Requirements:
+  Python 3.6+
+  Dependencies: python-gitlab, click
+
+Installation:
+  pip install -r requirements.txt
+
+Usage:
+  # GitLab.com (SaaS)
+  export GITLAB_TOKEN=glpat-...
+  python gitlab_contributor_count.py
+
+  # Self-hosted GitLab
+  python gitlab_contributor_count.py --url https://gitlab.mycompany.com
+
+  # JSON output
+  python gitlab_contributor_count.py --format json
+
+Token Scopes:
+  - read_api
+  - read_user
+"""
+
 import os
+import sys
+import json
 import datetime
+from typing import Dict, Set
 
-# Configure your GitLab API token and GitLab instance URL
-GITLAB_TOKEN = os.getenv("GITLAB_TOKEN")  # Set this as an environment variable
-GITLAB_URL = "https://gitlab.com"  # Replace with your GitLab instance URL, if self-hosted
+import gitlab
+import click
 
-# Initialize the GitLab connection
-gl = gitlab.Gitlab(GITLAB_URL, private_token=GITLAB_TOKEN)
 
-# Create a dictionary to store unique contributors for all groups and standalone projects
-all_contributors = {}
-unique_contributors = {}
+DEFAULT_GITLAB_URL = "https://gitlab.com"
+ENV_VAR_TOKEN = "GITLAB_TOKEN"
 
-# Calculate the date 90 days ago
-ninety_days_ago = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)
 
-# Fetch all groups the user has access to
-for group in gl.groups.list(all=True):  # Fetch all groups (pagination handled internally)
-    group_name = group.name
-    print(f"\nAnalyzing group: {group_name}")
+def parse_commit_date(created_at: str) -> datetime.datetime:
+    """Parse a GitLab commit timestamp into a datetime object."""
+    try:
+        return datetime.datetime.fromisoformat(created_at.rstrip('Z'))
+    except ValueError:
+        return datetime.datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%S.%f%z")
 
-    # Create a dictionary to store unique contributors for this group
-    contributors = {}
 
-    # Fetch all projects in the group
-    for project in group.projects.list(all=True):
-        project = gl.projects.get(project.id)
-        print(f"  Analyzing project: {project.name}")
+def process_commits(project, since_iso: str, contributors: Dict[str, dict],
+                    unique_contributors: Dict[str, dict], gitlab_url: str):
+    """Process commits for a project and update contributor maps.
 
-        # Fetch recent commits for the project
-        commits = project.commits.list(since=ninety_days_ago.isoformat(), all=True)
-        for commit in commits:
-            username = commit.author_name
-            try:
-                commit_date = datetime.datetime.fromisoformat(commit.created_at.rstrip('Z'))
-            except ValueError:
-                commit_date = datetime.datetime.strptime(commit.created_at, "%Y-%m-%dT%H:%M:%S.%f%z")
-            if username not in contributors or commit_date > contributors[username]['date']:
-                contributors[username] = {
-                    'date': commit_date,
-                    'sha': commit.id,
-                    'repo': project.name
-                }
-
-                # Add to unique contributors
-                if username not in unique_contributors or commit_date > unique_contributors[username]['date']:
-                    unique_contributors[username] = {
-                        'date': commit_date,
-                        'sha': commit.id,
-                        'repo': project.name
-                    }
-
-    # Add group contributors to the global list
-    all_contributors[group_name] = contributors
-
-# Fetch all projects the user has access to (including membership)
-print("\nAnalyzing all accessible projects:")
-accessible_contributors = {}
-for project in gl.projects.list(membership=True, all=True):  # Fetch all projects the user is a member of
-    print(f"  Analyzing project: {project.name}")
-
-    # Fetch recent commits for the project
-    commits = project.commits.list(since=ninety_days_ago.isoformat(), all=True)
+    Uses author_email as the primary dedup key (falls back to author_name).
+    Stores the most recent commit info per contributor for reporting.
+    """
+    commits = project.commits.list(since=since_iso, all=True)
     for commit in commits:
-        username = commit.author_name
-        try:
-            commit_date = datetime.datetime.fromisoformat(commit.created_at.rstrip('Z'))
-        except ValueError:
-            commit_date = datetime.datetime.strptime(commit.created_at, "%Y-%m-%dT%H:%M:%S.%f%z")
-        if username not in accessible_contributors or commit_date > accessible_contributors[username]['date']:
-            accessible_contributors[username] = {
-                'date': commit_date,
-                'sha': commit.id,
-                'repo': project.name
+        email = commit.author_email
+        name = commit.author_name
+        identifier = email if email else name
+
+        if not identifier:
+            continue
+
+        commit_date = parse_commit_date(commit.created_at)
+        # Use path_with_namespace for correct commit URLs
+        project_path = project.path_with_namespace
+        commit_info = {
+            'name': name,
+            'email': email,
+            'date': commit_date,
+            'sha': commit.id,
+            'project_path': project_path,
+        }
+
+        if identifier not in contributors or commit_date > contributors[identifier]['date']:
+            contributors[identifier] = commit_info
+
+        if identifier not in unique_contributors or commit_date > unique_contributors[identifier]['date']:
+            unique_contributors[identifier] = commit_info
+
+
+@click.command()
+@click.option('--url', '-u', default=DEFAULT_GITLAB_URL,
+              help='GitLab instance URL (default: https://gitlab.com).')
+@click.option('--token', '-t', help='GitLab Personal Access Token. Overrides GITLAB_TOKEN env var.')
+@click.option('--format', 'output_format', type=click.Choice(['text', 'json']), default='text',
+              help='Output format.')
+@click.option('--list-contributors', is_flag=True, help='List individual contributors and their emails.')
+def main(url, token, output_format, list_contributors):
+    """
+    Calculate unique contributors across all accessible GitLab groups and projects
+    over the last 90 days.
+    """
+    if not token:
+        token = os.environ.get(ENV_VAR_TOKEN)
+
+    if not token:
+        click.echo("Error: GITLAB_TOKEN is required. Set it as an environment variable or pass --token.", err=True)
+        sys.exit(1)
+
+    gl = gitlab.Gitlab(url, private_token=token)
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    ninety_days_ago = now - datetime.timedelta(days=90)
+    since_iso = ninety_days_ago.isoformat()
+
+    # group_name -> { identifier -> commit_info }
+    all_contributors: Dict[str, Dict[str, dict]] = {}
+    # global deduped map: identifier -> commit_info
+    unique_contributors: Dict[str, dict] = {}
+    # track project IDs already scanned via groups to avoid double-processing
+    scanned_project_ids: Set[int] = set()
+
+    # --- Scan group projects ---
+    if output_format == 'text':
+        click.echo("Fetching groups...")
+
+    for group in gl.groups.list(all=True):
+        group_name = group.name
+        if output_format == 'text':
+            click.echo(f"\nAnalyzing group: {group_name}")
+
+        contributors: Dict[str, dict] = {}
+
+        for group_project in group.projects.list(all=True):
+            project = gl.projects.get(group_project.id)
+            scanned_project_ids.add(project.id)
+            if output_format == 'text':
+                click.echo(f"  Scanning project: {project.name}...", nl=False)
+                sys.stdout.flush()
+
+            process_commits(project, since_iso, contributors, unique_contributors, url)
+
+            if output_format == 'text':
+                click.echo(" Done.")
+
+        all_contributors[group_name] = contributors
+
+    # --- Scan standalone / membership projects not already covered by groups ---
+    if output_format == 'text':
+        click.echo("\nAnalyzing standalone/membership projects:")
+
+    standalone_contributors: Dict[str, dict] = {}
+    for project in gl.projects.list(membership=True, all=True):
+        if project.id in scanned_project_ids:
+            continue
+        scanned_project_ids.add(project.id)
+
+        if output_format == 'text':
+            click.echo(f"  Scanning project: {project.name}...", nl=False)
+            sys.stdout.flush()
+
+        process_commits(project, since_iso, standalone_contributors, unique_contributors, url)
+
+        if output_format == 'text':
+            click.echo(" Done.")
+
+    all_contributors["Standalone Projects"] = standalone_contributors
+
+    # --- Output ---
+    total_contributors = len(unique_contributors)
+
+    if output_format == 'json':
+        json_output = {
+            "gitlab_url": url,
+            "scan_date": now.strftime('%Y-%m-%d'),
+            "contributors_90d": total_contributors,
+            "groups": {}
+        }
+
+        for group_name, contributors in all_contributors.items():
+            json_output["groups"][group_name] = {
+                "contributors_90d": len(contributors)
             }
 
-            # Add to unique contributors
-            if username not in unique_contributors or commit_date > unique_contributors[username]['date']:
-                unique_contributors[username] = {
-                    'date': commit_date,
-                    'sha': commit.id,
-                    'repo': project.name
+        if list_contributors:
+            json_output["contributors_details"] = [
+                {
+                    "identifier": ident,
+                    "name": info['name'],
+                    "email": info.get('email', ''),
+                    "last_commit_date": info['date'].strftime('%Y-%m-%d %H:%M:%S'),
+                    "last_commit_url": f"{url}/{info['project_path']}/-/commit/{info['sha']}"
                 }
+                for ident, info in sorted(unique_contributors.items())
+            ]
 
-# Add standalone project contributors to the global list
-all_contributors["Standalone Projects"] = accessible_contributors
+        click.echo(json.dumps(json_output, indent=2))
+    else:
+        # Per-group summary
+        for group_name, contributors in all_contributors.items():
+            click.echo(f"\nContributing developers in {group_name}: {len(contributors)}")
 
-# Print the results
-for group_name, contributors in all_contributors.items():
-    print(f"\nNumber of contributing developers in {group_name} in the last 90 days: {len(contributors)}")
+            if list_contributors:
+                for ident, info in sorted(contributors.items(), key=lambda x: x[1]['date'], reverse=True):
+                    commit_url = f"{url}/{info['project_path']}/-/commit/{info['sha']}"
+                    click.echo(f"  - {info['name']} ({info.get('email', 'N/A')}): "
+                               f"{info['date'].strftime('%Y-%m-%d %H:%M:%S')} UTC")
+                    click.echo(f"    Commit: {commit_url}")
 
-    print("\nContributing developers with commit info from the last 90 days:\n")
-    for username, commit_info in sorted(contributors.items(), key=lambda x: x[1]['date'], reverse=True):
-        commit_url = f"{GITLAB_URL}/{commit_info['repo']}/-/commit/{commit_info['sha']}"
-        print(f"- {username}: {commit_info['date'].strftime('%Y-%m-%d %H:%M:%S')} UTC")
-        print(f"  Commit URL: {commit_url}\n")
+        # Consolidated
+        click.echo("\n" + "=" * 40)
+        click.echo(f"GitLab URL: {url}")
+        click.echo(f"Scan Date: {now.strftime('%Y-%m-%d')}")
+        click.echo("-" * 40)
+        click.echo(f"Total unique contributors in last 90 days: {total_contributors}")
 
-# Print consolidated view of all unique contributors
-print("\nConsolidated view of all unique contributors in the last 90 days:")
-print(f"\nTotal unique contributors: {len(unique_contributors)}")
-for username, commit_info in sorted(unique_contributors.items(), key=lambda x: x[1]['date'], reverse=True):
-    commit_url = f"{GITLAB_URL}/{commit_info['repo']}/-/commit/{commit_info['sha']}"
-    print(f"- {username}: {commit_info['date'].strftime('%Y-%m-%d %H:%M:%S')} UTC")
-    print(f"  Commit URL: {commit_url}\n")
+        if list_contributors:
+            click.echo("-" * 40)
+            click.echo("All contributors:")
+            for ident, info in sorted(unique_contributors.items(), key=lambda x: x[1]['date'], reverse=True):
+                commit_url = f"{url}/{info['project_path']}/-/commit/{info['sha']}"
+                click.echo(f"  - {info['name']} ({info.get('email', 'N/A')}): "
+                           f"{info['date'].strftime('%Y-%m-%d %H:%M:%S')} UTC")
+                click.echo(f"    Commit: {commit_url}")
+
+        click.echo("=" * 40)
+
+
+if __name__ == '__main__':
+    main()

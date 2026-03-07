@@ -1,1 +1,2 @@
 python-gitlab>=3.12.0
+click

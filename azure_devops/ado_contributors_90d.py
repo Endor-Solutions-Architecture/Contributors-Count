@@ -75,20 +75,20 @@ class ADOClient:
     def get_paginated(self, url: str, params: Dict = None) -> Generator[Dict, None, None]:
         if params is None:
             params = {}
-        
-        # ADO pagination varies. For Git Repos, it's usually all at once or top N.
-        # For Commits, it uses skip/top or searchCriteria.
-        
-        response = self._request('GET', url, params=params)
-        data = response.json()
-        
-        items = data.get('value', [])
-        for item in items:
-            yield item
-            
-        # Basic continuation token handling if present (some ADO APIs use 'continuationToken' header)
-        # For simplicity in this script, we'll assume standard 'value' list return.
-        # If the API requires strict pagination for thousands of repos, we'd need to check 'x-ms-continuationtoken'.
+
+        while True:
+            response = self._request('GET', url, params=params)
+            data = response.json()
+
+            items = data.get('value', [])
+            for item in items:
+                yield item
+
+            # ADO uses x-ms-continuationtoken header for pagination
+            continuation_token = response.headers.get('x-ms-continuationtoken')
+            if not continuation_token:
+                break
+            params['continuationToken'] = continuation_token
 
 def fetch_repos(client: ADOClient, project: str) -> Generator[Dict, None, None]:
     """Yields repositories for the project."""
@@ -176,7 +176,8 @@ def main(org, project, token, output_format, list_contributors):
                 if identifier:
                     if identifier not in contributors_map:
                         contributors_map[identifier] = set()
-                    contributors_map[identifier].add(email)
+                    if email:
+                        contributors_map[identifier].add(email)
             
             if output_format == 'text':
                 click.echo(f" Done. ({commit_count} commits)")
