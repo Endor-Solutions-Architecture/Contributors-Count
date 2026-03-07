@@ -1,11 +1,17 @@
 # Contributing Developers Count
 
-## Github
+A collection of CLI tools that count unique contributing developers over the last 90 days across GitHub, GitLab, Bitbucket, and Azure DevOps. All tools feature automatic retry with exponential backoff, connection timeouts, rate-limit handling, and clean summary output suitable for customer-facing sizing exercises.
+
+**Requirements:** Python 3.6+
+
+## GitHub
 
 - Counts the number of contributing developers within the last 90 days of a given GitHub Organization
 - Scans all branches by default to capture contributors on feature branches (not just merged code)
 - Supports filtering to only count commits from each repository's default branch with `--default-branch-only`
+- Scans repositories concurrently (4 workers) for faster execution on large orgs
 - Prints the name of each GitHub user along with their email addresses
+- Supports GitHub Enterprise Server via `--base-url`
 - A GitHub PAT is recommended for authentication (required for private orgs). The permissions needed are shown below:
     - **Fine-grained tokens (recommended):**
         - Repository Permissions
@@ -25,16 +31,18 @@
 
 - `--org` / `-o`: GitHub organization name (required)
 - `--token` / `-t`: GitHub PAT (overrides `GITHUB_TOKEN` env var)
+- `--base-url`: GitHub API base URL, for GitHub Enterprise Server (default: `https://api.github.com`)
 - `--default-branch-only`: Only count commits from each repository's default branch
 - `--exclude-bots`: Exclude bot accounts from the contributor count
 - `--list-contributors`: List individual contributors and their emails
 - `--format`: Output format (`text` or `json`)
-- `--max-repos`: Limit number of repositories to process
+- `--max-repos`: Limit number of repositories to process (useful for testing)
 
-## Gitlab
+## GitLab
 
 - Counts the number of contributing developers within the last 90 days across all accessible GitLab groups and projects
 - Deduplicates contributors by email address across groups and standalone projects
+- Avoids double-scanning projects that appear in both groups and membership lists
 - Prints the groups and projects that are being analyzed
 - Prints the contributor count for individual groups and standalone projects
 - Prints the consolidated deduplicated report with name of each GitLab user, along with a link to a commit they've made in the last 90 days
@@ -53,7 +61,7 @@
 - `--list-contributors`: List individual contributors and their emails
 - `--format`: Output format (`text` or `json`)
 
-Note: The token used as GITLAB_TOKEN should have `read_api` and `read_user` access.
+Note: The token used as `GITLAB_TOKEN` should have `read_api` and `read_user` access.
 
 ## Bitbucket
 
@@ -82,6 +90,7 @@ Note: The token used as GITLAB_TOKEN should have `read_api` and `read_user` acce
 
 - Counts the number of unique contributing developers within the last 90 days of a given Bitbucket Server Project
 - Uses the Bitbucket Server REST API (1.0)
+- Automatically stops paginating commits once it reaches the 90-day boundary
 
 #### Running the script:
 
@@ -101,6 +110,7 @@ Note: The token used as GITLAB_TOKEN should have `read_api` and `read_user` acce
 
 - Counts the number of unique contributing developers within the last 90 days of a given Azure DevOps Project
 - Scans all Git repositories within the project
+- Handles pagination via continuation tokens for large organizations
 - Requires a Personal Access Token (PAT) with `Code (Read)` scope
 
 ### Running the script:
