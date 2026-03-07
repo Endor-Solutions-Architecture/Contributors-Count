@@ -2,291 +2,499 @@
 """
 GitHub Contributors Count Tool
 
-Purpose:
-  Calculates the number of unique contributing developers in a GitHub organization
-  over the last 90 days.
-
-Requirements:
-  Python 3.6+
-  Dependencies: requests, click
-
-Installation:
-  pip install -r requirements.txt
+Calculates the number of unique contributing developers in a GitHub
+organization over the last 90 days.
 
 Usage:
-  # Public org, no token (subject to lower rate limits)
-  python github_contributors_90d.py --org my-org
-
-  # Private org or higher rate limits (recommended)
   export GITHUB_TOKEN=ghp_...
   python github_contributors_90d.py --org my-org
-
-  # JSON output
   python github_contributors_90d.py --org my-org --format json
 
-Token Scopes:
-  - Public orgs: No scopes needed (or just public_repo).
-  - Private orgs: `read:org` and `repo` (read-only) scopes.
+Token permissions (fine-grained):
+  Repository  -> Metadata: Read-only, Contents: Read-only
+  Organization -> Members: Read-only
 """
 
 import os
+import re
 import sys
 import json
-import datetime
 import time
-from typing import Optional, Dict, Any, Set, Generator, List
+import datetime
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Optional, Dict, Any, Set, List, Tuple, Generator
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import click
 
+# ---------------------------------------------------------------------------
 # Constants
+# ---------------------------------------------------------------------------
 DEFAULT_BASE_URL = "https://api.github.com"
 ENV_VAR_TOKEN = "GITHUB_TOKEN"
+REQUEST_TIMEOUT: Tuple[int, int] = (10, 30)  # (connect, read) seconds
+DEFAULT_WORKERS = 4
+PER_PAGE = 100
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _sanitize(text: str, max_len: int = 300) -> str:
+    """Truncate and strip embedded credentials from error text."""
+    if not text:
+        return "Unknown error"
+    text = re.sub(r"://[^@/]+@", "://***@", text)
+    return text[:max_len]
+
+
+def _elapsed(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    return f"{m}m {s}s" if m else f"{s}s"
+
+
+def _summary_box(title: str, rows: List[Tuple[str, str]],
+                 result_label: str, result_value: str) -> None:
+    """Print a consistently-formatted summary table."""
+    w = 48
+    click.echo()
+    click.echo("=" * w)
+    click.echo(f"  {title}")
+    click.echo("=" * w)
+    for label, value in rows:
+        click.echo(f"  {label:<26}{value}")
+    click.echo("-" * w)
+    click.echo(f"  {result_label:<26}{result_value}")
+    click.echo("=" * w)
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+class ApiError(Exception):
+    """Non-success response from the GitHub API."""
+    def __init__(self, status_code: int, message: str) -> None:
+        self.status_code = status_code
+        super().__init__(f"HTTP {status_code}: {_sanitize(message)}")
+
+
+# ---------------------------------------------------------------------------
+# Client
+# ---------------------------------------------------------------------------
 
 class GitHubClient:
-    def __init__(self, token: Optional[str], base_url: str = DEFAULT_BASE_URL):
-        self.token = token
-        self.base_url = base_url.rstrip('/')
-        self.session = requests.Session()
-        if self.token:
-            self.session.headers.update({"Authorization": f"token {self.token}"})
-        self.session.headers.update({"Accept": "application/vnd.github.v3+json"})
+    """Thread-safe GitHub REST API client with retry and rate-limit support."""
 
-    def _request(self, method: str, endpoint: str, params: Dict = None) -> Any:
-        url = f"{self.base_url}{endpoint}"
+    def __init__(self, token: Optional[str],
+                 base_url: str = DEFAULT_BASE_URL) -> None:
+        self._token = token
+        self._base_url = base_url.rstrip("/")
+        self._local = threading.local()
+        self._print_lock = threading.Lock()
+
+    def __repr__(self) -> str:
+        return (f"GitHubClient(base_url={self._base_url!r}, "
+                f"authenticated={self._token is not None})")
+
+    # -- Thread-local session ------------------------------------------------
+
+    @property
+    def _session(self) -> requests.Session:
+        """One connection-pooled session per thread."""
+        if not hasattr(self._local, "session"):
+            s = requests.Session()
+            if self._token:
+                s.headers["Authorization"] = f"token {self._token}"
+            s.headers["Accept"] = "application/vnd.github.v3+json"
+            s.headers["User-Agent"] = "contributors-count/1.0"
+
+            retry = Retry(
+                total=3,
+                backoff_factor=1,
+                status_forcelist=[500, 502, 503, 504],
+                allowed_methods=["GET"],
+                raise_on_status=False,
+            )
+            adapter = HTTPAdapter(
+                max_retries=retry, pool_connections=10, pool_maxsize=10,
+            )
+            s.mount("https://", adapter)
+            s.mount("http://", adapter)
+            self._local.session = s
+        return self._local.session
+
+    # -- Core request --------------------------------------------------------
+
+    def _get(self, url: str,
+             params: Optional[Dict[str, Any]] = None) -> requests.Response:
         while True:
-            response = self.session.request(method, url, params=params)
-            
-            # Handle Rate Limiting
-            if response.status_code == 403 and 'X-RateLimit-Remaining' in response.headers:
-                remaining = int(response.headers.get('X-RateLimit-Remaining', 0))
-                if remaining == 0:
-                    reset_time = int(response.headers.get('X-RateLimit-Reset', 0))
-                    sleep_seconds = max(0, reset_time - int(time.time())) + 1
-                    click.echo(f"Rate limit exceeded. Sleeping for {sleep_seconds} seconds...", err=True)
-                    time.sleep(sleep_seconds)
+            try:
+                resp = self._session.get(
+                    url, params=params, timeout=REQUEST_TIMEOUT,
+                )
+            except requests.ConnectionError:
+                raise ApiError(
+                    0, "Connection failed. Check network and --base-url.",
+                )
+            except requests.Timeout:
+                raise ApiError(
+                    0, f"Request timed out after {REQUEST_TIMEOUT[1]}s.",
+                )
+
+            # GitHub primary rate limit: 403 + remaining == 0
+            if resp.status_code == 403:
+                remaining = resp.headers.get("X-RateLimit-Remaining")
+                if remaining is not None and int(remaining) == 0:
+                    reset_ts = int(resp.headers.get("X-RateLimit-Reset", 0))
+                    wait = max(1, reset_ts - int(time.time()) + 1)
+                    with self._print_lock:
+                        click.echo(
+                            f"  Rate limit hit. Waiting {wait}s ...",
+                            err=True,
+                        )
+                    time.sleep(wait)
                     continue
 
-            if response.status_code != 200:
-                # Try to get error message
+            # Secondary / standard 429
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", 60))
+                with self._print_lock:
+                    click.echo(
+                        f"  Rate limit hit. Waiting {retry_after}s ...",
+                        err=True,
+                    )
+                time.sleep(retry_after)
+                continue
+
+            if resp.status_code != 200:
                 try:
-                    data = response.json()
-                    message = data.get('message', response.text)
-                except:
-                    message = response.text
-                raise Exception(f"GitHub API Error ({response.status_code}): {message}")
+                    msg = resp.json().get("message", resp.text[:300])
+                except (ValueError, KeyError):
+                    msg = resp.text[:300]
+                raise ApiError(resp.status_code, msg)
 
-            return response
+            return resp
 
-    def get_paginated(self, endpoint: str, params: Dict = None) -> Generator[Dict, None, None]:
+    # -- Paginated GET -------------------------------------------------------
+
+    def get_paginated(self, endpoint: str,
+                      params: Optional[Dict[str, Any]] = None,
+                      ) -> Generator[Dict[str, Any], None, None]:
         if params is None:
             params = {}
-        params['per_page'] = 100
-        
-        url = f"{self.base_url}{endpoint}"
-        
+        params["per_page"] = PER_PAGE
+
+        url = f"{self._base_url}{endpoint}"
         while url:
-            response = self._request('GET', url.replace(self.base_url, ''), params=params)
-            
-            items = response.json()
-            if not isinstance(items, list):
-                # Some endpoints return a dict, but for lists we expect a list
-                yield items
+            resp = self._get(url, params=params)
+            data = resp.json()
+
+            if isinstance(data, list):
+                yield from data
+            else:
+                yield data
                 return
 
-            for item in items:
-                yield item
-            
-            # Handle pagination links
-            if 'next' in response.links:
-                url = response.links['next']['url']
-                params = {} # Params are usually encoded in the next link
-            else:
-                url = None
+            url = resp.links.get("next", {}).get("url")
+            params = {}  # encoded in the next URL
 
-def fetch_repos(client: GitHubClient, org: str, max_repos: Optional[int] = None) -> Generator[Dict, None, None]:
-    """Yields repositories for the organization."""
-    count = 0
+
+# ---------------------------------------------------------------------------
+# Data fetching
+# ---------------------------------------------------------------------------
+
+def fetch_repos(client: GitHubClient, org: str,
+                max_repos: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Eagerly fetch all repos so we know the total count for progress."""
+    repos: List[Dict[str, Any]] = []
+    for repo in client.get_paginated(f"/orgs/{org}/repos"):
+        repos.append(repo)
+        if max_repos and len(repos) >= max_repos:
+            break
+    return repos
+
+
+def _fetch_branches(client: GitHubClient, repo_full_name: str) -> List[str]:
     try:
-        # Try fetching org repos
-        for repo in client.get_paginated(f"/orgs/{org}/repos"):
-            yield repo
-            count += 1
-            if max_repos and count >= max_repos:
-                break
-    except Exception as e:
-        raise Exception(f"Failed to fetch repos for org '{org}': {e}")
+        return [
+            b["name"]
+            for b in client.get_paginated(
+                f"/repos/{repo_full_name}/branches",
+            )
+        ]
+    except ApiError as exc:
+        with client._print_lock:
+            click.echo(
+                f"  Warning: could not list branches for "
+                f"{repo_full_name} ({exc})",
+                err=True,
+            )
+        return []
 
-def fetch_branches(client: GitHubClient, repo_full_name: str) -> List[str]:
-    """Fetches all branch names for a repository."""
-    branches = []
-    try:
-        for branch in client.get_paginated(f"/repos/{repo_full_name}/branches"):
-            branches.append(branch['name'])
-    except Exception as e:
-        click.echo(f"Warning: Failed to fetch branches for {repo_full_name}: {e}", err=True)
-    return branches
 
-def fetch_commits(client: GitHubClient, repo_full_name: str, since: str, until: str, sha: Optional[str] = None) -> Generator[Dict, None, None]:
-    """Yields commits for a repository within the time window.
-    
-    Args:
-        client: GitHub API client
-        repo_full_name: Full repository name (owner/repo)
-        since: ISO 8601 timestamp for start of window
-        until: ISO 8601 timestamp for end of window
-        sha: Optional branch name or SHA to filter commits (e.g., 'main', 'master')
-    """
-    params = {'since': since, 'until': until}
+def _fetch_commits(client: GitHubClient, repo_full_name: str,
+                   since: str, until: str,
+                   sha: Optional[str] = None,
+                   ) -> Generator[Dict[str, Any], None, None]:
+    params: Dict[str, str] = {"since": since, "until": until}
     if sha:
-        params['sha'] = sha
+        params["sha"] = sha
     try:
-        for commit in client.get_paginated(f"/repos/{repo_full_name}/commits", params=params):
-            yield commit
-    except Exception as e:
-        # If a repo is empty or other issue, just log to stderr and continue
-        click.echo(f"Warning: Failed to fetch commits for {repo_full_name}: {e}", err=True)
+        yield from client.get_paginated(
+            f"/repos/{repo_full_name}/commits", params=params,
+        )
+    except ApiError as exc:
+        with client._print_lock:
+            click.echo(
+                f"  Warning: commits skipped for "
+                f"{repo_full_name} ({exc})",
+                err=True,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Repo scanner (unit of work for the thread pool)
+# ---------------------------------------------------------------------------
+
+def _scan_repo(
+    client: GitHubClient,
+    repo: Dict[str, Any],
+    since_iso: str,
+    until_iso: str,
+    default_branch_only: bool,
+    exclude_bots: bool,
+) -> Dict[str, Any]:
+    """Scan a single repo; returns local contributor data (thread-safe)."""
+    repo_name: str = repo["full_name"]
+    default_branch: Optional[str] = repo.get("default_branch")
+
+    if default_branch_only:
+        branches = [default_branch] if default_branch else []
+    else:
+        branches = _fetch_branches(client, repo_name)
+
+    local_contribs: Dict[str, Set[str]] = {}
+    local_shas: Set[str] = set()
+    commit_count = 0
+
+    for branch in branches:
+        for commit in _fetch_commits(
+            client, repo_name, since_iso, until_iso, sha=branch,
+        ):
+            sha = commit.get("sha")
+            if sha in local_shas:
+                continue
+            local_shas.add(sha)
+            commit_count += 1
+
+            author = commit.get("author")
+            commit_author = commit.get("commit", {}).get("author", {})
+
+            if not author or "login" not in author:
+                continue
+
+            login: str = author["login"]
+            if exclude_bots:
+                if (author.get("type") == "Bot"
+                        or login.lower().endswith("[bot]")):
+                    continue
+
+            email: Optional[str] = commit_author.get("email")
+            if login not in local_contribs:
+                local_contribs[login] = set()
+            if email:
+                local_contribs[login].add(email)
+
+    return {
+        "repo_name": repo_name,
+        "branch_count": len(branches),
+        "commit_count": commit_count,
+        "contributors": local_contribs,
+    }
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 @click.command()
-@click.option('--org', '-o', required=True, help='GitHub organization name.')
-@click.option('--token', '-t', help='GitHub Personal Access Token. Overrides GITHUB_TOKEN env var.')
-@click.option('--base-url', default=DEFAULT_BASE_URL, help='GitHub API Base URL.')
-@click.option('--format', 'output_format', type=click.Choice(['text', 'json']), default='text', help='Output format.')
-@click.option('--max-repos', type=int, help='Limit the number of repositories to process (for testing/large orgs).')
-@click.option('--list-contributors', is_flag=True, help='List individual contributors and their emails.')
-@click.option('--default-branch-only', is_flag=True, help='Only count commits from each repository\'s default branch.')
-@click.option('--exclude-bots', is_flag=True, help='Exclude bot accounts from the contributor count.')
-def main(org, token, base_url, output_format, max_repos, list_contributors, default_branch_only, exclude_bots):
-    """
-    Calculate unique contributors for a GitHub Org over the last 90 days.
-    """
-    # Resolve token
+@click.option("--org", "-o", required=True,
+              help="GitHub organization name.")
+@click.option("--token", "-t",
+              help="GitHub PAT (overrides GITHUB_TOKEN env var).")
+@click.option("--base-url", default=DEFAULT_BASE_URL,
+              help="GitHub API base URL (for GHES).")
+@click.option("--format", "output_format",
+              type=click.Choice(["text", "json"]), default="text",
+              help="Output format.")
+@click.option("--max-repos", type=int,
+              help="Cap the number of repos to scan (useful for testing).")
+@click.option("--list-contributors", is_flag=True,
+              help="Include per-contributor detail in output.")
+@click.option("--default-branch-only", is_flag=True,
+              help="Only scan each repo's default branch.")
+@click.option("--exclude-bots", is_flag=True,
+              help="Exclude bot accounts from the count.")
+def main(
+    org: str,
+    token: Optional[str],
+    base_url: str,
+    output_format: str,
+    max_repos: Optional[int],
+    list_contributors: bool,
+    default_branch_only: bool,
+    exclude_bots: bool,
+) -> None:
+    """Count unique contributors for a GitHub org over the last 90 days."""
+    t0 = time.monotonic()
+
+    # -- Resolve token -------------------------------------------------------
     if not token:
         token = os.environ.get(ENV_VAR_TOKEN)
-
-    if not token and output_format == 'text':
-        click.echo("Note: No token provided. Using anonymous access (lower rate limits).", err=True)
+    if not token and output_format == "text":
+        click.echo(
+            "Note: No token provided. Using anonymous access "
+            "(lower rate limits).",
+            err=True,
+        )
 
     client = GitHubClient(token, base_url)
 
-    # Calculate window (90 days)
+    # -- Time window ---------------------------------------------------------
     now = datetime.datetime.now(datetime.timezone.utc)
-    days = 90
-    start_date = now - datetime.timedelta(days=days)
-    
-    # ISO 8601 format for GitHub API
-    since_iso = start_date.isoformat()
+    since_iso = (now - datetime.timedelta(days=90)).isoformat()
     until_iso = now.isoformat()
 
-    # Map login -> Set of emails
-    contributors_map: Dict[str, Set[str]] = {}
-    # Track seen commit SHAs to avoid double-counting across branches
-    seen_commit_shas: Set[str] = set()
-    repo_count = 0
-    
-    if output_format == 'text':
-        click.echo(f"Fetching repositories for {org}...")
+    # -- Fetch repo list -----------------------------------------------------
+    if output_format == "text":
+        click.echo(f"Fetching repositories for {org} ...")
 
     try:
         repos = fetch_repos(client, org, max_repos)
-        
-        for repo in repos:
-            repo_count += 1
-            repo_name = repo['full_name']
-            default_branch = repo.get('default_branch')
-            
-            # Determine which branches to scan
-            if default_branch_only:
-                branches_to_scan = [default_branch] if default_branch else []
-                branch_info = f" (branch: {default_branch})"
-            else:
-                branches_to_scan = fetch_branches(client, repo_name)
-                branch_info = f" (all {len(branches_to_scan)} branches)"
-            
-            if output_format == 'text':
-                click.echo(f"Scanning {repo_name}{branch_info}...", nl=False)
-                sys.stdout.flush()
-
-            commit_count = 0
-            for branch in branches_to_scan:
-                commits = fetch_commits(client, repo_name, since_iso, until_iso, sha=branch)
-                
-                for commit in commits:
-                    commit_sha = commit.get('sha')
-                    
-                    # Skip if we've already processed this commit (from another branch)
-                    if commit_sha in seen_commit_shas:
-                        continue
-                    seen_commit_shas.add(commit_sha)
-                    
-                    commit_count += 1
-                    author = commit.get('author')
-                    commit_author_info = commit.get('commit', {}).get('author', {})
-                    
-                    if author and 'login' in author:
-                        login = author['login']
-                        author_type = author.get('type', 'User')
-                        
-                        # Skip bots if --exclude-bots is enabled
-                        if exclude_bots:
-                            # Check if GitHub identifies this as a Bot
-                            if author_type == 'Bot':
-                                continue
-                            # Check for [bot] suffix in username (case-insensitive)
-                            if login.lower().endswith('[bot]'):
-                                continue
-                        
-                        email = commit_author_info.get('email')
-                        
-                        if login not in contributors_map:
-                            contributors_map[login] = set()
-                        
-                        if email:
-                            contributors_map[login].add(email)
-            
-            if output_format == 'text':
-                click.echo(f" Done. ({commit_count} unique commits fetched)")
-
-    except Exception as e:
-        click.echo(f"\nError: {e}", err=True)
+    except ApiError as exc:
+        click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 
-    total_contributors = len(contributors_map)
+    total_repos = len(repos)
+    if output_format == "text":
+        click.echo(f"  Found {total_repos} repositories.\n")
 
-    if output_format == 'json':
-        json_output = {
+    if total_repos == 0:
+        if output_format == "json":
+            click.echo(json.dumps({
+                "org": org, "scan_date": now.strftime("%Y-%m-%d"),
+                "contributors_90d": 0, "repositories_scanned": 0,
+            }, indent=2))
+        else:
+            click.echo("  No repositories found.")
+        sys.exit(0)
+
+    # -- Scan repos (threaded) -----------------------------------------------
+    global_contribs: Dict[str, Set[str]] = {}
+    completed = 0
+    total_commits = 0
+    workers = min(DEFAULT_WORKERS, total_repos)
+
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(
+                    _scan_repo, client, repo,
+                    since_iso, until_iso,
+                    default_branch_only, exclude_bots,
+                ): repo
+                for repo in repos
+            }
+
+            for future in as_completed(futures):
+                completed += 1
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    if output_format == "text":
+                        click.echo(
+                            f"  Warning: repo scan failed: {exc}", err=True,
+                        )
+                    continue
+
+                # Merge results into global map
+                for login, emails in result["contributors"].items():
+                    if login not in global_contribs:
+                        global_contribs[login] = set()
+                    global_contribs[login].update(emails)
+
+                total_commits += result["commit_count"]
+
+                if output_format == "text":
+                    rn = result["repo_name"]
+                    bc = result["branch_count"]
+                    cc = result["commit_count"]
+                    pad = len(str(total_repos))
+                    b_label = (
+                        "default branch"
+                        if default_branch_only
+                        else f"{bc} branch{'es' if bc != 1 else ''}"
+                    )
+                    click.echo(
+                        f"  [{completed:>{pad}}/{total_repos}] "
+                        f"{rn} ({b_label}) "
+                        f"... {cc:,} commits"
+                    )
+
+    except KeyboardInterrupt:
+        click.echo("\nScan interrupted by user.", err=True)
+        sys.exit(130)
+
+    elapsed = time.monotonic() - t0
+    total_contributors = len(global_contribs)
+
+    # -- Output --------------------------------------------------------------
+    if output_format == "json":
+        payload: Dict[str, Any] = {
             "org": org,
-            "scan_date": now.strftime('%Y-%m-%d'),
+            "scan_date": now.strftime("%Y-%m-%d"),
+            "repositories_scanned": total_repos,
             "default_branch_only": default_branch_only,
             "exclude_bots": exclude_bots,
-            "contributors_90d": total_contributors
+            "elapsed_seconds": round(elapsed, 1),
+            "contributors_90d": total_contributors,
         }
-        
         if list_contributors:
-            json_output["contributors_details"] = [
-                {"login": login, "emails": sorted(list(emails))}
-                for login, emails in sorted(contributors_map.items())
+            payload["contributors_details"] = [
+                {"login": login, "emails": sorted(emails)}
+                for login, emails in sorted(global_contribs.items())
             ]
-            
-        click.echo(json.dumps(json_output, indent=2))
+        click.echo(json.dumps(payload, indent=2))
     else:
-        click.echo("\n" + "="*40)
-        click.echo(f"Organization: {org}")
-        click.echo(f"Scan Date: {now.strftime('%Y-%m-%d')}")
-        click.echo(f"Repositories scanned: {repo_count}")
-        click.echo(f"Default branch only: {'Yes' if default_branch_only else 'No'}")
-        click.echo(f"Bots excluded: {'Yes' if exclude_bots else 'No'}")
-        click.echo("-" * 40)
-        click.echo(f"Contributors in last 90 days: {total_contributors}")
-        
-        if list_contributors:
-            click.echo("-" * 40)
-            click.echo("Contributors:")
-            for login in sorted(contributors_map.keys()):
-                emails = ", ".join(sorted(contributors_map[login]))
-                click.echo(f"  - {login} ({emails})")
-                
-        click.echo("="*40)
+        rows: List[Tuple[str, str]] = [
+            ("Organization:", org),
+            ("Scan Date:", now.strftime("%Y-%m-%d")),
+            ("Repositories Scanned:", str(total_repos)),
+            ("Total Commits:", f"{total_commits:,}"),
+            ("Scan Mode:",
+             "Default branch" if default_branch_only else "All branches"),
+            ("Bots Excluded:", "Yes" if exclude_bots else "No"),
+            ("Elapsed:", _elapsed(elapsed)),
+        ]
+        _summary_box(
+            "GitHub Contributors - 90 Day Report",
+            rows,
+            "Unique Contributors:", str(total_contributors),
+        )
 
-if __name__ == '__main__':
+        if list_contributors:
+            click.echo("\n  Contributors:")
+            for login in sorted(global_contribs):
+                emails_str = (
+                    ", ".join(sorted(global_contribs[login])) or "N/A"
+                )
+                click.echo(f"    {login:<30} {emails_str}")
+            click.echo()
+
+
+if __name__ == "__main__":
     main()
