@@ -1,11 +1,135 @@
-# Contributing Developers Count
+# Contributors-Count
 
-All scripts share these common options:
+**Know exactly how many developers are committing code across your organization — on any platform.**
 
-- `--days` / `-d`: Configurable time window (default: 90). E.g., `--days 30` counts contributors from the last 30 days.
-- `--exclude-bots`: Exclude bot and service accounts from the contributor count using heuristic detection.
-- `--verbose` / `-v`: Print API diagnostics to stderr for troubleshooting.
-- `--format`: Output as `text` (default), `json`, or `markdown` (a shareable report with tables and per-repo breakdowns).
+Contributors-Count scans GitHub, GitLab, Bitbucket (Cloud & Server), and Azure DevOps to produce a deduplicated count of unique contributors over a configurable time window. No manual spreadsheets. No double-counting across repos. One command, one answer.
+
+---
+
+## Why This Exists
+
+You need to know how many developers are actively contributing code. Sounds simple — until you try:
+
+- **Repos are scattered.** Dozens (or hundreds) of repositories, each with their own commit history.
+- **People use multiple emails.** The same developer shows up as three different contributors.
+- **Bots inflate the numbers.** Dependabot, Renovate, and CI service accounts aren't developers.
+- **Manual counting doesn't scale.** Exporting CSVs from each repo and deduplicating in a spreadsheet is error-prone and tedious.
+
+Contributors-Count handles all of this automatically: it walks every repository, deduplicates by identity, filters bots on request, and gives you a single number you can trust.
+
+## Quick Start
+
+### Single Platform
+
+```bash
+cd GitHub
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+export GITHUB_TOKEN=your_token_here
+python3 github_contributors_90d.py --org my-org
+```
+
+### Cross-Platform (Unified Mode)
+
+Scan multiple platforms in a single command with cross-platform deduplication:
+
+```bash
+pip install -r requirements-test.txt  # installs all dependencies
+
+# Create a config file (see platforms.json.example)
+cp platforms.json.example platforms.json
+# Edit platforms.json with your org/workspace details
+
+python3 contributors_count.py --config platforms.json
+```
+
+The unified runner deduplicates contributors **across platforms** by shared email, so a developer who commits on both GitHub and GitLab is counted once.
+
+```
+====================================================
+  Cross-Platform Contributors Report
+====================================================
+  Scan Date:         2026-03-19
+  Time Window:       90 days
+  Bots Excluded:     No
+  Scan Duration:     3m 42s
+
+  GitHub: my-org
+    Repositories:    42
+    Commits:         3,456
+    Contributors:    67
+
+  GitLab: https://gitlab.com
+    Repositories:    18
+    Commits:         1,230
+    Contributors:    31
+
+----------------------------------------------------
+  Per-platform sum:  98
+  Cross-platform:    12 duplicate(s) merged
+  Unique Contributors: 86
+====================================================
+```
+
+---
+
+## Common Options
+
+All scripts (including the unified runner) share these flags:
+
+| Flag | Description |
+|------|-------------|
+| `--days` / `-d` | Time window in days (default: **90**) |
+| `--exclude-bots` | Filter out bot and service accounts |
+| `--verbose` / `-v` | Print API diagnostics to stderr |
+| `--list-contributors` | Show each contributor and their email(s) |
+| `--format` | Output as `text` (default), `json`, or `markdown` |
+
+## Unified Cross-Platform Mode
+
+For scanning multiple platforms at once with cross-platform deduplication:
+
+### Configuration
+
+Create a `platforms.json` file (see `platforms.json.example`):
+
+```json
+{
+  "github": { "org": "my-org" },
+  "gitlab": { "url": "https://gitlab.com" },
+  "azure_devops": {
+    "org": "https://dev.azure.com/myorg",
+    "project": "myproject"
+  }
+}
+```
+
+Only include the platforms you want to scan. Tokens are read from environment variables (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `ADO_TOKEN`, `BITBUCKET_USER`/`BITBUCKET_PASSWORD`).
+
+### Usage
+
+```bash
+# Scan all configured platforms
+python3 contributors_count.py --config platforms.json
+
+# 30-day window, exclude bots, markdown report
+python3 contributors_count.py --config platforms.json --days 30 --exclude-bots --format markdown > report.md
+
+# JSON output with contributor list
+python3 contributors_count.py --config platforms.json --format json --list-contributors
+```
+
+### Cross-Platform Deduplication
+
+The unified runner merges contributors across platforms by shared email address using a union-find algorithm. If a developer commits as `alice` on GitHub (email: alice@work.com) and `alice-gl` on GitLab (email: alice@work.com), they're counted as one unique contributor.
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details on the deduplication strategy.
+
+---
+
+<details>
+<summary><strong>Individual Platform Setup & Options</strong></summary>
 
 ## Github
 
@@ -143,6 +267,8 @@ Note: The token used as `GITLAB_TOKEN` should have `read_api` and `read_user` ac
 - `--verbose` / `-v`: Print API diagnostics to stderr
 - `--list-contributors`: List individual contributors and their emails
 - `--format`: Output format (`text`, `json`, or `markdown`)
+
+</details>
 
 ## Running Tests
 

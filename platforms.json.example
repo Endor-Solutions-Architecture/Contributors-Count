@@ -1,0 +1,21 @@
+{
+  "github": {
+    "org": "my-org",
+    "base_url": "https://api.github.com",
+    "default_branch_only": false
+  },
+  "gitlab": {
+    "url": "https://gitlab.com"
+  },
+  "bitbucket_cloud": {
+    "workspace": "my-workspace"
+  },
+  "bitbucket_server": {
+    "project": "MYPROJ",
+    "url": "https://bitbucket.mycompany.com"
+  },
+  "azure_devops": {
+    "org": "https://dev.azure.com/myorg",
+    "project": "myproject"
+  }
+}
