@@ -4,7 +4,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 from click.testing import CliRunner
 
-from bitbucket_contributors_90d import main, BitbucketClient, fetch_repos, fetch_commits
+from bitbucket_contributors_90d import main, BitbucketClient, fetch_repos
 
 
 class TestCLI:
@@ -48,22 +48,22 @@ class TestBitbucketClient:
 
     def test_client_sets_basic_auth(self):
         client = BitbucketClient(user="testuser", password="testpass")
-        assert client.session.auth == ("testuser", "testpass")
+        assert client._session.auth == ("testuser", "testpass")
 
     def test_client_strips_trailing_slash(self):
         client = BitbucketClient(user="u", password="p", base_url="https://api.bitbucket.org/2.0/")
-        assert client.base_url == "https://api.bitbucket.org/2.0"
+        assert client._base_url == "https://api.bitbucket.org/2.0"
 
 
 class TestContributorDedup:
     """Tests for contributor deduplication logic."""
 
-    @patch('bitbucket_contributors_90d.fetch_commits')
+    @patch('bitbucket_contributors_90d._fetch_commits')
     @patch('bitbucket_contributors_90d.fetch_repos')
     def test_account_id_dedup(self, mock_repos, mock_commits):
-        mock_repos.return_value = iter([
+        mock_repos.return_value = [
             {'name': 'repo1', 'slug': 'repo1'},
-        ])
+        ]
         mock_commits.return_value = iter([
             {
                 'author': {
@@ -89,12 +89,12 @@ class TestContributorDedup:
         data = json.loads(result.output)
         assert data['unique_contributors'] == 1
 
-    @patch('bitbucket_contributors_90d.fetch_commits')
+    @patch('bitbucket_contributors_90d._fetch_commits')
     @patch('bitbucket_contributors_90d.fetch_repos')
     def test_email_fallback_when_no_account_id(self, mock_repos, mock_commits):
-        mock_repos.return_value = iter([
+        mock_repos.return_value = [
             {'name': 'repo1', 'slug': 'repo1'},
-        ])
+        ]
         mock_commits.return_value = iter([
             {
                 'author': {
@@ -120,12 +120,12 @@ class TestContributorDedup:
         data = json.loads(result.output)
         assert data['unique_contributors'] == 2
 
-    @patch('bitbucket_contributors_90d.fetch_commits')
+    @patch('bitbucket_contributors_90d._fetch_commits')
     @patch('bitbucket_contributors_90d.fetch_repos')
     def test_raw_name_fallback_when_no_email(self, mock_repos, mock_commits):
-        mock_repos.return_value = iter([
+        mock_repos.return_value = [
             {'name': 'repo1', 'slug': 'repo1'},
-        ])
+        ]
         mock_commits.return_value = iter([
             {
                 'author': {
@@ -149,10 +149,10 @@ class TestContributorDedup:
 class TestDaysFlag:
     """Tests for the configurable --days flag."""
 
-    @patch('bitbucket_contributors_90d.fetch_commits')
+    @patch('bitbucket_contributors_90d._fetch_commits')
     @patch('bitbucket_contributors_90d.fetch_repos')
     def test_days_in_json_output(self, mock_repos, mock_commits):
-        mock_repos.return_value = iter([])
+        mock_repos.return_value = []
         runner = CliRunner()
         result = runner.invoke(main, [
             '--workspace', 'test-ws',
@@ -165,10 +165,10 @@ class TestDaysFlag:
         assert data['days'] == 30
         assert 'unique_contributors' in data
 
-    @patch('bitbucket_contributors_90d.fetch_commits')
+    @patch('bitbucket_contributors_90d._fetch_commits')
     @patch('bitbucket_contributors_90d.fetch_repos')
     def test_default_days_is_90(self, mock_repos, mock_commits):
-        mock_repos.return_value = iter([])
+        mock_repos.return_value = []
         runner = CliRunner()
         result = runner.invoke(main, [
             '--workspace', 'test-ws',
@@ -179,10 +179,13 @@ class TestDaysFlag:
         data = json.loads(result.output)
         assert data['days'] == 90
 
-    @patch('bitbucket_contributors_90d.fetch_commits')
+    @patch('bitbucket_contributors_90d._fetch_commits')
     @patch('bitbucket_contributors_90d.fetch_repos')
     def test_days_in_text_output(self, mock_repos, mock_commits):
-        mock_repos.return_value = iter([])
+        mock_repos.return_value = [
+            {'name': 'repo1', 'slug': 'repo1'},
+        ]
+        mock_commits.return_value = iter([])
         runner = CliRunner()
         result = runner.invoke(main, [
             '--workspace', 'test-ws',
@@ -196,10 +199,10 @@ class TestDaysFlag:
 class TestOutputFormats:
     """Tests for text and JSON output structure."""
 
-    @patch('bitbucket_contributors_90d.fetch_commits')
+    @patch('bitbucket_contributors_90d._fetch_commits')
     @patch('bitbucket_contributors_90d.fetch_repos')
     def test_json_structure(self, mock_repos, mock_commits):
-        mock_repos.return_value = iter([])
+        mock_repos.return_value = []
         runner = CliRunner()
         result = runner.invoke(main, [
             '--workspace', 'test-ws',
@@ -213,10 +216,13 @@ class TestOutputFormats:
         assert 'days' in data
         assert 'unique_contributors' in data
 
-    @patch('bitbucket_contributors_90d.fetch_commits')
+    @patch('bitbucket_contributors_90d._fetch_commits')
     @patch('bitbucket_contributors_90d.fetch_repos')
     def test_text_output_structure(self, mock_repos, mock_commits):
-        mock_repos.return_value = iter([])
+        mock_repos.return_value = [
+            {'name': 'repo1', 'slug': 'repo1'},
+        ]
+        mock_commits.return_value = iter([])
         runner = CliRunner()
         result = runner.invoke(main, [
             '--workspace', 'test-ws',

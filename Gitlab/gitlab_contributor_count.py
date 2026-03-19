@@ -183,6 +183,7 @@ def main(url, token, output_format, list_contributors, days):
         user_agent="contributors-count/1.0",
     )
 
+    t0 = time.monotonic()
     now = datetime.datetime.now(datetime.timezone.utc)
     start_date = now - datetime.timedelta(days=days)
     since_iso = start_date.isoformat()
@@ -288,7 +289,7 @@ def main(url, token, output_format, list_contributors, days):
         }
 
         for group_name, contributors in all_contributors.items():
-            json_output["groups"][group_name] = {
+            payload["groups"][group_name] = {
                 "unique_contributors": len(contributors)
             }
         if list_contributors:

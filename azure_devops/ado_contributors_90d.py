@@ -245,6 +245,7 @@ def main(org, project, token, output_format, list_contributors, days):
 
     client = ADOClient(token, org)
 
+    t0 = time.monotonic()
     now = datetime.datetime.now(datetime.timezone.utc)
     start_date = now - datetime.timedelta(days=days)
     
@@ -324,7 +325,7 @@ def main(org, project, token, output_format, list_contributors, days):
         click.echo(f"Organization: {org}")
         click.echo(f"Project: {project}")
         click.echo(f"Scan Date: {now.strftime('%Y-%m-%d')}")
-        click.echo(f"Repositories scanned: {repo_count}")
+        click.echo(f"Repositories scanned: {total_repos}")
         click.echo("-" * 40)
         click.echo(f"Contributors in last {days} days: {total_contributors}")
         

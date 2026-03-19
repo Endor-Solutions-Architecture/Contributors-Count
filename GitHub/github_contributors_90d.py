@@ -364,6 +364,7 @@ def main(org, token, base_url, output_format, max_repos, list_contributors, defa
 
     client = GitHubClient(token, base_url)
 
+    t0 = time.monotonic()
     now = datetime.datetime.now(datetime.timezone.utc)
     start_date = now - datetime.timedelta(days=days)
     
@@ -389,7 +390,7 @@ def main(org, token, base_url, output_format, max_repos, list_contributors, defa
         if output_format == "json":
             click.echo(json.dumps({
                 "org": org, "scan_date": now.strftime("%Y-%m-%d"),
-                "contributors_90d": 0, "repositories_scanned": 0,
+                "unique_contributors": 0, "repositories_scanned": 0,
             }, indent=2))
         else:
             click.echo("  No repositories found.")
@@ -474,7 +475,7 @@ def main(org, token, base_url, output_format, max_repos, list_contributors, defa
         click.echo("\n" + "="*40)
         click.echo(f"Organization: {org}")
         click.echo(f"Scan Date: {now.strftime('%Y-%m-%d')}")
-        click.echo(f"Repositories scanned: {repo_count}")
+        click.echo(f"Repositories scanned: {total_repos}")
         click.echo(f"Default branch only: {'Yes' if default_branch_only else 'No'}")
         click.echo(f"Bots excluded: {'Yes' if exclude_bots else 'No'}")
         click.echo("-" * 40)

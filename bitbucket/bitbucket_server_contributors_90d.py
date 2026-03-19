@@ -277,6 +277,7 @@ def main(project, url, user, password, output_format, list_contributors, days):
 
     client = BitbucketServerClient(url, user, password)
 
+    t0 = time.monotonic()
     now = datetime.datetime.now(datetime.timezone.utc)
     start_date = now - datetime.timedelta(days=days)
     
@@ -354,7 +355,7 @@ def main(project, url, user, password, output_format, list_contributors, days):
         click.echo("\n" + "="*40)
         click.echo(f"Project: {project}")
         click.echo(f"Scan Date: {now.strftime('%Y-%m-%d')}")
-        click.echo(f"Repositories scanned: {repo_count}")
+        click.echo(f"Repositories scanned: {total_repos}")
         click.echo("-" * 40)
         click.echo(f"Contributors in last {days} days: {total_contributors}")
         

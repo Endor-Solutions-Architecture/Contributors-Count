@@ -1,11 +1,11 @@
 import json
 import datetime
-from unittest.mock import patch, MagicMock, PropertyMock
+from unittest.mock import patch, MagicMock
 
 import pytest
 from click.testing import CliRunner
 
-from gitlab_contributor_count import main, parse_commit_date, process_commits
+from gitlab_contributor_count import main, _parse_commit_date, _process_project
 
 
 class TestCLI:
@@ -38,28 +38,28 @@ class TestCLI:
 
 
 class TestParsing:
-    """Tests for date parsing and commit processing."""
+    """Tests for date parsing."""
 
     def test_parse_iso_date_with_z(self):
-        dt = parse_commit_date("2025-03-15T10:30:00Z")
+        dt = _parse_commit_date("2025-03-15T10:30:00Z")
         assert dt.year == 2025
         assert dt.month == 3
         assert dt.day == 15
 
     def test_parse_iso_date_without_z(self):
-        dt = parse_commit_date("2025-03-15T10:30:00")
+        dt = _parse_commit_date("2025-03-15T10:30:00")
         assert dt.year == 2025
         assert dt.month == 3
 
     def test_parse_iso_date_with_timezone(self):
-        dt = parse_commit_date("2025-03-15T10:30:00.000+00:00")
+        dt = _parse_commit_date("2025-03-15T10:30:00.000+00:00")
         assert dt.year == 2025
 
 
 class TestContributorDedup:
-    """Tests for contributor deduplication in process_commits."""
+    """Tests for contributor deduplication in _process_project."""
 
-    def _make_mock_commit(self, email, name, created_at, sha="abc123", project_path="group/proj"):
+    def _make_mock_commit(self, email, name, created_at, sha="abc123"):
         commit = MagicMock()
         commit.author_email = email
         commit.author_name = name
@@ -67,56 +67,68 @@ class TestContributorDedup:
         commit.id = sha
         return commit
 
-    def test_same_email_deduplicated(self):
-        project = MagicMock()
-        project.path_with_namespace = "group/project"
-        project.commits.list.return_value = [
+    @patch('gitlab_contributor_count.gitlab.Gitlab')
+    def test_same_email_deduplicated(self, mock_gitlab_cls):
+        mock_gl = MagicMock()
+        mock_project = MagicMock()
+        mock_project.path_with_namespace = "group/project"
+        mock_project.commits.list.return_value = [
             self._make_mock_commit("alice@example.com", "Alice", "2025-03-15T10:00:00Z", "sha1"),
             self._make_mock_commit("alice@example.com", "Alice A", "2025-03-16T10:00:00Z", "sha2"),
         ]
+        mock_gl.projects.get.return_value = mock_project
 
         contributors = {}
         unique = {}
-        process_commits(project, "2025-03-01T00:00:00Z", contributors, unique, "https://gitlab.com")
+        _process_project(mock_gl, 1, "2025-03-01T00:00:00Z", contributors, unique, "https://gitlab.com")
         assert len(unique) == 1
 
-    def test_different_emails_separate(self):
-        project = MagicMock()
-        project.path_with_namespace = "group/project"
-        project.commits.list.return_value = [
+    @patch('gitlab_contributor_count.gitlab.Gitlab')
+    def test_different_emails_separate(self, mock_gitlab_cls):
+        mock_gl = MagicMock()
+        mock_project = MagicMock()
+        mock_project.path_with_namespace = "group/project"
+        mock_project.commits.list.return_value = [
             self._make_mock_commit("alice@example.com", "Alice", "2025-03-15T10:00:00Z", "sha1"),
             self._make_mock_commit("bob@example.com", "Bob", "2025-03-16T10:00:00Z", "sha2"),
         ]
+        mock_gl.projects.get.return_value = mock_project
 
         contributors = {}
         unique = {}
-        process_commits(project, "2025-03-01T00:00:00Z", contributors, unique, "https://gitlab.com")
+        _process_project(mock_gl, 1, "2025-03-01T00:00:00Z", contributors, unique, "https://gitlab.com")
         assert len(unique) == 2
 
-    def test_fallback_to_name_when_no_email(self):
-        project = MagicMock()
-        project.path_with_namespace = "group/project"
-        project.commits.list.return_value = [
+    @patch('gitlab_contributor_count.gitlab.Gitlab')
+    def test_fallback_to_name_when_no_email(self, mock_gitlab_cls):
+        mock_gl = MagicMock()
+        mock_project = MagicMock()
+        mock_project.path_with_namespace = "group/project"
+        mock_project.commits.list.return_value = [
             self._make_mock_commit(None, "Alice NoEmail", "2025-03-15T10:00:00Z", "sha1"),
             self._make_mock_commit(None, "Alice NoEmail", "2025-03-16T10:00:00Z", "sha2"),
         ]
+        mock_gl.projects.get.return_value = mock_project
 
         contributors = {}
         unique = {}
-        process_commits(project, "2025-03-01T00:00:00Z", contributors, unique, "https://gitlab.com")
+        _process_project(mock_gl, 1, "2025-03-01T00:00:00Z", contributors, unique, "https://gitlab.com")
         assert len(unique) == 1
 
-    def test_keeps_most_recent_commit(self):
-        project = MagicMock()
-        project.path_with_namespace = "group/project"
-        project.commits.list.return_value = [
+    @patch('gitlab_contributor_count.gitlab.Gitlab')
+    def test_keeps_most_recent_commit(self, mock_gitlab_cls):
+        mock_gl = MagicMock()
+        mock_project = MagicMock()
+        mock_project.path_with_namespace = "group/project"
+        mock_project.commits.list.return_value = [
             self._make_mock_commit("alice@example.com", "Alice", "2025-03-10T10:00:00Z", "old-sha"),
             self._make_mock_commit("alice@example.com", "Alice", "2025-03-20T10:00:00Z", "new-sha"),
         ]
+        mock_gl.projects.get.return_value = mock_project
 
         contributors = {}
         unique = {}
-        process_commits(project, "2025-03-01T00:00:00Z", contributors, unique, "https://gitlab.com")
+        _process_project(mock_gl, 1, "2025-03-01T00:00:00Z", contributors, unique, "https://gitlab.com")
         assert unique["alice@example.com"]["sha"] == "new-sha"
 
 
