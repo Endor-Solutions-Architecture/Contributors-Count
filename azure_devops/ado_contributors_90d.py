@@ -23,6 +23,9 @@ Usage:
   # JSON output
   python ado_contributors_90d.py --org https://dev.azure.com/myorg --project myproject --format json
 
+  # Markdown report
+  python ado_contributors_90d.py --org https://dev.azure.com/myorg --project myproject --format markdown
+
 Token Scopes:
   - `Code (Read)`
 """
@@ -76,6 +79,34 @@ def _summary_box(title: str, rows: List[Tuple[str, str]],
     click.echo("-" * w)
     click.echo(f"  {result_label:<26}{result_value}")
     click.echo("=" * w)
+
+
+# ---------------------------------------------------------------------------
+# Bot detection
+# ---------------------------------------------------------------------------
+
+_BOT_SUFFIXES = ("[bot]",)
+_BOT_NAME_KEYWORDS = (
+    "build service", "dependabot", "renovate", "snyk", "codecov",
+    "greenkeeper", "mergify", "project collection build service",
+)
+_BOT_EMAIL_KEYWORDS = ("noreply", "[bot]", "bot@", "builds@", "pipeline@")
+
+
+def _is_bot(name: str, email: Optional[str] = None) -> bool:
+    """Heuristic check for automated / service accounts."""
+    if not name:
+        return False
+    lower = name.lower()
+    if any(lower.endswith(s) for s in _BOT_SUFFIXES):
+        return True
+    if any(k in lower for k in _BOT_NAME_KEYWORDS):
+        return True
+    if email:
+        email_lower = email.lower()
+        if any(k in email_lower for k in _BOT_EMAIL_KEYWORDS):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -226,13 +257,19 @@ def _fetch_commits(
 @click.option('--org', '-o', required=True, help='Azure DevOps Org URL (e.g. https://dev.azure.com/myorg).')
 @click.option('--project', '-p', required=True, help='Project name.')
 @click.option('--token', '-t', help='Personal Access Token. Overrides ADO_TOKEN env var.')
-@click.option('--format', 'output_format', type=click.Choice(['text', 'json']), default='text', help='Output format.')
+@click.option('--format', 'output_format', type=click.Choice(['text', 'json', 'markdown']), default='text', help='Output format.')
 @click.option('--list-contributors', is_flag=True, help='List individual contributors and their emails.')
 @click.option('--days', '-d', type=int, default=90, show_default=True, help='Number of days to look back for contributions.')
-def main(org, project, token, output_format, list_contributors, days):
+@click.option('--exclude-bots', is_flag=True, help='Exclude bot/service accounts from the contributor count.')
+@click.option('--verbose', '-v', is_flag=True, help='Print API diagnostics to stderr.')
+def main(org, project, token, output_format, list_contributors, days, exclude_bots, verbose):
     """
     Calculate unique contributors for an Azure DevOps Project over a configurable time window.
     """
+    def vlog(msg: str) -> None:
+        if verbose:
+            click.echo(f"  [verbose] {msg}", err=True)
+
     if days < 1:
         click.echo("Error: --days must be at least 1.", err=True)
         sys.exit(1)
@@ -248,9 +285,14 @@ def main(org, project, token, output_format, list_contributors, days):
     t0 = time.monotonic()
     now = datetime.datetime.now(datetime.timezone.utc)
     start_date = now - datetime.timedelta(days=days)
-    
+
     since_iso = start_date.isoformat()
     until_iso = now.isoformat()
+
+    vlog(f"Organization URL: {org}")
+    vlog(f"Project: {project}")
+    vlog(f"Time window: {start_date.strftime('%Y-%m-%d')} to {now.strftime('%Y-%m-%d')} ({days} days)")
+    vlog(f"Exclude bots: {exclude_bots}")
 
     # -- Fetch repos ---------------------------------------------------------
     if output_format == "text":
@@ -263,12 +305,16 @@ def main(org, project, token, output_format, list_contributors, days):
         sys.exit(1)
 
     total_repos = len(repos)
+    vlog(f"Found {total_repos} repositories")
     if output_format == "text":
         click.echo(f"  Found {total_repos} repositories.\n")
 
     # -- Scan repos ----------------------------------------------------------
     contributors_map: Dict[str, Set[str]] = {}
+    repo_commit_counts: List[Tuple[str, int]] = []
+    skipped_repos: List[str] = []
     total_commits = 0
+    bots_filtered = 0
 
     for idx, repo in enumerate(repos, 1):
         repo_name: str = repo["name"]
@@ -282,28 +328,51 @@ def main(org, project, token, output_format, list_contributors, days):
             )
             sys.stdout.flush()
 
+        repo_t0 = time.monotonic()
         commit_count = 0
-        for commit in _fetch_commits(
-            client, project, repo_id, since_iso, until_iso,
-        ):
-            commit_count += 1
-            author = commit.get("author", {})
-            email: Optional[str] = author.get("email")
-            name: Optional[str] = author.get("name")
+        repo_failed = False
+        try:
+            for commit in _fetch_commits(
+                client, project, repo_id, since_iso, until_iso,
+            ):
+                commit_count += 1
+                author = commit.get("author", {})
+                email: Optional[str] = author.get("email")
+                name: Optional[str] = author.get("name")
 
-            identifier = email if email else name
-            if identifier:
-                if identifier not in contributors_map:
-                    contributors_map[identifier] = set()
-                if email:
-                    contributors_map[identifier].add(email)
+                if exclude_bots and _is_bot(name or "", email):
+                    bots_filtered += 1
+                    continue
+
+                identifier = email if email else name
+                if identifier:
+                    if identifier not in contributors_map:
+                        contributors_map[identifier] = set()
+                    if email:
+                        contributors_map[identifier].add(email)
+        except Exception as exc:
+            repo_failed = True
+            skipped_repos.append(repo_name)
+            click.echo(f"\n  Warning: skipped {repo_name}: {exc}", err=True)
 
         total_commits += commit_count
-        if output_format == "text":
+        repo_commit_counts.append((repo_name, commit_count))
+        repo_elapsed = time.monotonic() - repo_t0
+        vlog(f"{repo_name}: {commit_count} commits in {_elapsed(repo_elapsed)}")
+
+        if output_format == "text" and not repo_failed:
             click.echo(f" {commit_count:,} commits")
 
     elapsed = time.monotonic() - t0
     total_contributors = len(contributors_map)
+
+    if skipped_repos and output_format == "text":
+        click.echo(f"\n  Warning: {len(skipped_repos)} repo(s) skipped due to errors.", err=True)
+
+    vlog(f"Scan complete in {_elapsed(elapsed)}: {total_contributors} contributors, "
+         f"{total_commits:,} commits across {total_repos} repos")
+    if exclude_bots:
+        vlog(f"Bot commits filtered: {bots_filtered}")
 
     # -- Output --------------------------------------------------------------
     if output_format == "json":
@@ -312,7 +381,10 @@ def main(org, project, token, output_format, list_contributors, days):
             "project": project,
             "scan_date": now.strftime('%Y-%m-%d'),
             "days": days,
-            "unique_contributors": total_contributors
+            "exclude_bots": exclude_bots,
+            "unique_contributors": total_contributors,
+            "repositories_scanned": total_repos,
+            "skipped_repos": skipped_repos,
         }
         if list_contributors:
             payload["contributors_details"] = [
@@ -320,22 +392,65 @@ def main(org, project, token, output_format, list_contributors, days):
                 for ident, emails in sorted(contributors_map.items())
             ]
         click.echo(json.dumps(payload, indent=2))
+    elif output_format == "markdown":
+        lines = [
+            f"# Contributors Report — Azure DevOps",
+            "",
+            "| Field | Value |",
+            "|-------|-------|",
+            f"| **Organization** | {org} |",
+            f"| **Project** | {project} |",
+            f"| **Scan Date** | {now.strftime('%Y-%m-%d')} |",
+            f"| **Time Window** | {days} days |",
+            f"| **Repositories Scanned** | {total_repos} |",
+            f"| **Bots Excluded** | {'Yes' if exclude_bots else 'No'} |",
+            f"| **Scan Duration** | {_elapsed(elapsed)} |",
+            "",
+            f"## Unique Contributors: {total_contributors}",
+            "",
+        ]
+        if list_contributors and contributors_map:
+            lines.append("| # | Contributor | Email(s) |")
+            lines.append("|---|-------------|----------|")
+            for i, ident in enumerate(sorted(contributors_map.keys()), 1):
+                emails_str = ", ".join(sorted(contributors_map[ident])) or "N/A"
+                lines.append(f"| {i} | {ident} | {emails_str} |")
+            lines.append("")
+        if repo_commit_counts:
+            lines.append("<details>")
+            lines.append("<summary>Per-Repository Breakdown</summary>")
+            lines.append("")
+            lines.append("| Repository | Commits |")
+            lines.append("|------------|---------|")
+            for rname, rcount in sorted(repo_commit_counts, key=lambda x: x[1], reverse=True):
+                lines.append(f"| {rname} | {rcount:,} |")
+            lines.append("")
+            lines.append("</details>")
+            lines.append("")
+        if skipped_repos:
+            lines.append(f"> **Note:** {len(skipped_repos)} repo(s) skipped due to errors: "
+                         + ", ".join(skipped_repos))
+            lines.append("")
+        lines.append("---")
+        lines.append("*Generated by [Contributors-Count](https://github.com/nicklhw/Contributors-Count)*")
+        click.echo("\n".join(lines))
     else:
         click.echo("\n" + "="*40)
         click.echo(f"Organization: {org}")
         click.echo(f"Project: {project}")
         click.echo(f"Scan Date: {now.strftime('%Y-%m-%d')}")
         click.echo(f"Repositories scanned: {total_repos}")
+        click.echo(f"Bots excluded: {'Yes' if exclude_bots else 'No'}")
         click.echo("-" * 40)
         click.echo(f"Contributors in last {days} days: {total_contributors}")
-        
+
         if list_contributors:
             click.echo("-" * 40)
             click.echo("Contributors:")
             for ident in sorted(contributors_map.keys()):
                 emails = ", ".join(sorted(contributors_map[ident]))
                 click.echo(f"  - {ident} ({emails})")
-                
+
         click.echo("="*40)
 
 if __name__ == '__main__':

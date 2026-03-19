@@ -228,3 +228,106 @@ class TestOutputFormats:
         assert 'Project: PROJ' in result.output
         assert 'Scan Date:' in result.output
         assert 'Contributors in last 90 days:' in result.output
+
+
+class TestVerboseMode:
+    """Tests for --verbose flag."""
+
+    def test_verbose_flag_in_help(self):
+        result = CliRunner().invoke(main, ['--help'])
+        assert result.exit_code == 0
+        assert '--verbose' in result.output
+
+    @patch('bitbucket_server_contributors_90d._fetch_commits')
+    @patch('bitbucket_server_contributors_90d.fetch_repos')
+    def test_verbose_outputs_to_stderr(self, mock_repos, mock_commits):
+        mock_repos.return_value = [{'name': 'repo1', 'slug': 'repo1'}]
+        mock_commits.return_value = iter([])
+
+        runner = CliRunner(mix_stderr=False)
+        result = runner.invoke(main, [
+            '--project', 'PROJ',
+            '--url', 'https://bb.example.com',
+            '--user', 'u', '--password', 'p',
+            '--format', 'json',
+            '--verbose',
+        ])
+        assert result.exit_code == 0
+        assert '[verbose]' in result.stderr
+
+
+class TestBotExclusion:
+    """Tests for --exclude-bots flag."""
+
+    def test_exclude_bots_flag_in_help(self):
+        result = CliRunner().invoke(main, ['--help'])
+        assert result.exit_code == 0
+        assert '--exclude-bots' in result.output
+
+    @patch('bitbucket_server_contributors_90d._fetch_commits')
+    @patch('bitbucket_server_contributors_90d.fetch_repos')
+    def test_bots_excluded(self, mock_repos, mock_commits):
+        mock_repos.return_value = [{'name': 'repo1', 'slug': 'repo1'}]
+        mock_commits.return_value = iter([
+            {'author': {'emailAddress': 'bot@noreply.com', 'name': 'dependabot[bot]'}},
+            {'author': {'emailAddress': 'alice@example.com', 'name': 'Alice'}},
+        ])
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            '--project', 'PROJ',
+            '--url', 'https://bb.example.com',
+            '--user', 'u', '--password', 'p',
+            '--format', 'json',
+            '--exclude-bots',
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data['unique_contributors'] == 1
+
+    @patch('bitbucket_server_contributors_90d._fetch_commits')
+    @patch('bitbucket_server_contributors_90d.fetch_repos')
+    def test_bots_included_by_default(self, mock_repos, mock_commits):
+        mock_repos.return_value = [{'name': 'repo1', 'slug': 'repo1'}]
+        mock_commits.return_value = iter([
+            {'author': {'emailAddress': 'bot@noreply.com', 'name': 'dependabot[bot]'}},
+            {'author': {'emailAddress': 'alice@example.com', 'name': 'Alice'}},
+        ])
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            '--project', 'PROJ',
+            '--url', 'https://bb.example.com',
+            '--user', 'u', '--password', 'p',
+            '--format', 'json',
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data['unique_contributors'] == 2
+
+
+class TestMarkdownOutput:
+    """Tests for --format markdown output."""
+
+    def test_markdown_format_in_help(self):
+        result = CliRunner().invoke(main, ['--help'])
+        assert result.exit_code == 0
+        assert 'markdown' in result.output
+
+    @patch('bitbucket_server_contributors_90d._fetch_commits')
+    @patch('bitbucket_server_contributors_90d.fetch_repos')
+    def test_markdown_output_structure(self, mock_repos, mock_commits):
+        mock_repos.return_value = []
+        mock_commits.return_value = iter([])
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            '--project', 'PROJ',
+            '--url', 'https://bb.example.com',
+            '--user', 'u', '--password', 'p',
+            '--format', 'markdown',
+        ])
+        assert result.exit_code == 0
+        assert '# Contributors Report' in result.output
+        assert '| Field | Value |' in result.output
+        assert 'Unique Contributors' in result.output

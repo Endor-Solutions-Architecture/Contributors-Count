@@ -221,3 +221,128 @@ class TestOutputFormats:
         assert 'GitLab URL:' in result.output
         assert 'Scan Date:' in result.output
         assert 'Total unique contributors in last 90 days:' in result.output
+
+
+class TestVerboseMode:
+    """Tests for --verbose flag."""
+
+    def test_verbose_flag_in_help(self):
+        result = CliRunner().invoke(main, ['--help'])
+        assert result.exit_code == 0
+        assert '--verbose' in result.output
+
+    @patch('gitlab_contributor_count.gitlab.Gitlab')
+    def test_verbose_outputs_to_stderr(self, mock_gitlab_cls):
+        mock_gl = MagicMock()
+        mock_gitlab_cls.return_value = mock_gl
+        mock_gl.groups.list.return_value = []
+        mock_gl.projects.list.return_value = []
+
+        runner = CliRunner(mix_stderr=False)
+        result = runner.invoke(main, [
+            '--token', 'fake-token',
+            '--format', 'json',
+            '--verbose',
+        ])
+        assert result.exit_code == 0
+        assert '[verbose]' in result.stderr
+
+
+class TestBotExclusion:
+    """Tests for --exclude-bots flag."""
+
+    def test_exclude_bots_flag_in_help(self):
+        result = CliRunner().invoke(main, ['--help'])
+        assert result.exit_code == 0
+        assert '--exclude-bots' in result.output
+
+    def _make_mock_commit(self, email, name, created_at, sha="abc123"):
+        commit = MagicMock()
+        commit.author_email = email
+        commit.author_name = name
+        commit.created_at = created_at
+        commit.id = sha
+        return commit
+
+    @patch('gitlab_contributor_count.gitlab.Gitlab')
+    def test_bots_excluded(self, mock_gitlab_cls):
+        mock_gl = MagicMock()
+        mock_gitlab_cls.return_value = mock_gl
+        mock_group = MagicMock()
+        mock_group.name = "group1"
+        mock_project = MagicMock()
+        mock_project.id = 1
+        mock_project.name = "proj1"
+        mock_project.path_with_namespace = "group1/proj1"
+        mock_project.commits.list.return_value = [
+            self._make_mock_commit("bot@noreply.com", "dependabot[bot]", "2025-03-15T10:00:00Z", "sha1"),
+            self._make_mock_commit("alice@example.com", "Alice", "2025-03-16T10:00:00Z", "sha2"),
+        ]
+        mock_group.projects.list.return_value = [mock_project]
+        mock_gl.groups.list.return_value = [mock_group]
+        mock_gl.projects.get.return_value = mock_project
+        mock_gl.projects.list.return_value = []
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            '--token', 'fake-token',
+            '--format', 'json',
+            '--exclude-bots',
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data['unique_contributors'] == 1
+
+    @patch('gitlab_contributor_count.gitlab.Gitlab')
+    def test_bots_included_by_default(self, mock_gitlab_cls):
+        mock_gl = MagicMock()
+        mock_gitlab_cls.return_value = mock_gl
+        mock_group = MagicMock()
+        mock_group.name = "group1"
+        mock_project = MagicMock()
+        mock_project.id = 1
+        mock_project.name = "proj1"
+        mock_project.path_with_namespace = "group1/proj1"
+        mock_project.commits.list.return_value = [
+            self._make_mock_commit("bot@noreply.com", "dependabot[bot]", "2025-03-15T10:00:00Z", "sha1"),
+            self._make_mock_commit("alice@example.com", "Alice", "2025-03-16T10:00:00Z", "sha2"),
+        ]
+        mock_group.projects.list.return_value = [mock_project]
+        mock_gl.groups.list.return_value = [mock_group]
+        mock_gl.projects.get.return_value = mock_project
+        mock_gl.projects.list.return_value = []
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            '--token', 'fake-token',
+            '--format', 'json',
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data['unique_contributors'] == 2
+
+
+class TestMarkdownOutput:
+    """Tests for --format markdown output."""
+
+    def test_markdown_format_in_help(self):
+        result = CliRunner().invoke(main, ['--help'])
+        assert result.exit_code == 0
+        assert 'markdown' in result.output
+
+    @patch('gitlab_contributor_count.gitlab.Gitlab')
+    def test_markdown_output_structure(self, mock_gitlab_cls):
+        mock_gl = MagicMock()
+        mock_gitlab_cls.return_value = mock_gl
+        mock_gl.groups.list.return_value = []
+        mock_gl.projects.list.return_value = []
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            '--token', 'fake-token',
+            '--format', 'markdown',
+        ])
+        assert result.exit_code == 0
+        assert '# Contributors Report' in result.output
+        assert '| Field | Value |' in result.output
+        assert 'Unique Contributors' in result.output

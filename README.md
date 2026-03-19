@@ -1,6 +1,11 @@
 # Contributing Developers Count
 
-All scripts support a configurable time window via `--days` (default: 90). For example, `--days 30` counts contributors from the last 30 days.
+All scripts share these common options:
+
+- `--days` / `-d`: Configurable time window (default: 90). E.g., `--days 30` counts contributors from the last 30 days.
+- `--exclude-bots`: Exclude bot and service accounts from the contributor count using heuristic detection.
+- `--verbose` / `-v`: Print API diagnostics to stderr for troubleshooting.
+- `--format`: Output as `text` (default), `json`, or `markdown` (a shareable report with tables and per-repo breakdowns).
 
 ## Github
 
@@ -32,8 +37,9 @@ All scripts support a configurable time window via `--days` (default: 90). For e
 - `--days` / `-d`: Number of days to look back (default: 90)
 - `--default-branch-only`: Only count commits from each repository's default branch
 - `--exclude-bots`: Exclude bot accounts from the contributor count
+- `--verbose` / `-v`: Print API diagnostics to stderr
 - `--list-contributors`: List individual contributors and their emails
-- `--format`: Output format (`text` or `json`)
+- `--format`: Output format (`text`, `json`, or `markdown`)
 - `--max-repos`: Limit number of repositories to process (useful for testing)
 
 ## GitLab
@@ -57,8 +63,10 @@ All scripts support a configurable time window via `--days` (default: 90). For e
 - `--url` / `-u`: GitLab instance URL (default: `https://gitlab.com`). Use this for self-hosted instances.
 - `--token` / `-t`: GitLab Personal Access Token (overrides `GITLAB_TOKEN` env var)
 - `--days` / `-d`: Number of days to look back (default: 90)
+- `--exclude-bots`: Exclude bot/service accounts from the contributor count
+- `--verbose` / `-v`: Print API diagnostics to stderr
 - `--list-contributors`: List individual contributors and their emails
-- `--format`: Output format (`text` or `json`)
+- `--format`: Output format (`text`, `json`, or `markdown`)
 
 Note: The token used as `GITLAB_TOKEN` should have `read_api` and `read_user` access.
 
@@ -83,8 +91,10 @@ Note: The token used as `GITLAB_TOKEN` should have `read_api` and `read_user` ac
 - `--user` / `-u`: Bitbucket username (overrides `BITBUCKET_USER` env var)
 - `--password` / `-p`: Bitbucket App Password (overrides `BITBUCKET_PASSWORD` env var)
 - `--days` / `-d`: Number of days to look back (default: 90)
+- `--exclude-bots`: Exclude bot/service accounts from the contributor count
+- `--verbose` / `-v`: Print API diagnostics to stderr
 - `--list-contributors`: List individual contributors and their emails
-- `--format`: Output format (`text` or `json`)
+- `--format`: Output format (`text`, `json`, or `markdown`)
 
 ### Bitbucket Server / Data Center
 
@@ -104,8 +114,10 @@ Note: The token used as `GITLAB_TOKEN` should have `read_api` and `read_user` ac
 - `--user` / `-u`: Username (overrides `BITBUCKET_USER` env var)
 - `--password` / `-pw`: Password/Token (overrides `BITBUCKET_PASSWORD` env var)
 - `--days` / `-d`: Number of days to look back (default: 90)
+- `--exclude-bots`: Exclude bot/service accounts from the contributor count
+- `--verbose` / `-v`: Print API diagnostics to stderr
 - `--list-contributors`: List individual contributors and their emails
-- `--format`: Output format (`text` or `json`)
+- `--format`: Output format (`text`, `json`, or `markdown`)
 
 ## Azure DevOps
 
@@ -127,8 +139,19 @@ Note: The token used as `GITLAB_TOKEN` should have `read_api` and `read_user` ac
 - `--project` / `-p`: Project name (required)
 - `--token` / `-t`: Personal Access Token (overrides `ADO_TOKEN` env var)
 - `--days` / `-d`: Number of days to look back (default: 90)
+- `--exclude-bots`: Exclude bot/service accounts from the contributor count
+- `--verbose` / `-v`: Print API diagnostics to stderr
 - `--list-contributors`: List individual contributors and their emails
-- `--format`: Output format (`text` or `json`)
+- `--format`: Output format (`text`, `json`, or `markdown`)
+
+## Running Tests
+
+From the project root:
+
+```bash
+pip install -r requirements-test.txt
+pytest tests/ -v
+```
 
 ## No Warranty
 

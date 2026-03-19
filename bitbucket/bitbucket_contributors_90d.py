@@ -21,8 +21,9 @@ Usage:
   # Custom time window (e.g., 30 days)
   python bitbucket_contributors_90d.py --workspace myworkspace --days 30
 
-  # JSON output
+  # Output formats: text (default), json, markdown
   python bitbucket_contributors_90d.py --workspace myworkspace --format json
+  python bitbucket_contributors_90d.py --workspace myworkspace --format markdown
 
 Token Scopes:
   - `Repositories: Read`
@@ -77,6 +78,34 @@ def _summary_box(title: str, rows: List[Tuple[str, str]],
     click.echo("-" * w)
     click.echo(f"  {result_label:<26}{result_value}")
     click.echo("=" * w)
+
+
+# ---------------------------------------------------------------------------
+# Bot detection
+# ---------------------------------------------------------------------------
+
+_BOT_SUFFIXES = ("[bot]",)
+_BOT_NAME_KEYWORDS = (
+    "build service", "dependabot", "renovate", "snyk", "codecov",
+    "greenkeeper", "mergify", "bitbucket-pipelines",
+)
+_BOT_EMAIL_KEYWORDS = ("noreply", "[bot]", "bot@", "builds@", "pipeline@")
+
+
+def _is_bot(name: str, email: Optional[str] = None) -> bool:
+    """Heuristic check for automated / service accounts."""
+    if not name:
+        return False
+    lower = name.lower()
+    if any(lower.endswith(s) for s in _BOT_SUFFIXES):
+        return True
+    if any(k in lower for k in _BOT_NAME_KEYWORDS):
+        return True
+    if email:
+        email_lower = email.lower()
+        if any(k in email_lower for k in _BOT_EMAIL_KEYWORDS):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -208,16 +237,22 @@ def _fetch_commits(client: BitbucketClient, workspace: str,
 @click.option('--workspace', '-w', required=True, help='Bitbucket Workspace ID/Slug.')
 @click.option('--user', '-u', help='Bitbucket Username. Overrides BITBUCKET_USER env var.')
 @click.option('--password', '-p', help='Bitbucket App Password. Overrides BITBUCKET_PASSWORD env var.')
-@click.option('--format', 'output_format', type=click.Choice(['text', 'json']), default='text', help='Output format.')
+@click.option('--format', 'output_format', type=click.Choice(['text', 'json', 'markdown']), default='text', help='Output format.')
 @click.option('--list-contributors', is_flag=True, help='List individual contributors and their emails.')
 @click.option('--days', '-d', type=int, default=90, show_default=True, help='Number of days to look back for contributions.')
-def main(workspace, user, password, output_format, list_contributors, days):
+@click.option('--exclude-bots', is_flag=True, help='Exclude bot/service accounts from the contributor count.')
+@click.option('--verbose', '-v', is_flag=True, help='Print API diagnostics to stderr.')
+def main(workspace, user, password, output_format, list_contributors, days, exclude_bots, verbose):
     """
     Calculate unique contributors for a Bitbucket Workspace over a configurable time window.
     """
     if days < 1:
         click.echo("Error: --days must be at least 1.", err=True)
         sys.exit(1)
+
+    def vlog(msg: str) -> None:
+        if verbose:
+            click.echo(f"  [verbose] {msg}", err=True)
 
     if not user:
         user = os.environ.get(ENV_VAR_USER)
@@ -239,6 +274,10 @@ def main(workspace, user, password, output_format, list_contributors, days):
     
     since_iso = start_date.isoformat()
 
+    vlog(f"Workspace: {workspace}")
+    vlog(f"Time window: {start_date.strftime('%Y-%m-%d')} to {now.strftime('%Y-%m-%d')} ({days} days)")
+    vlog(f"Exclude bots: {exclude_bots}")
+
     # -- Fetch repos ---------------------------------------------------------
     if output_format == "text":
         click.echo(f"Fetching repositories for {workspace} ...")
@@ -250,12 +289,16 @@ def main(workspace, user, password, output_format, list_contributors, days):
         sys.exit(1)
 
     total_repos = len(repos)
+    vlog(f"Found {total_repos} repositories")
     if output_format == "text":
         click.echo(f"  Found {total_repos} repositories.\n")
 
     # -- Scan repos ----------------------------------------------------------
     contributors_map: Dict[str, Set[str]] = {}
     total_commits = 0
+    repo_commit_counts: List[Tuple[str, int]] = []
+    skipped_repos: List[str] = []
+    bots_filtered = 0
 
     for idx, repo in enumerate(repos, 1):
         repo_name: str = repo["name"]
@@ -270,36 +313,57 @@ def main(workspace, user, password, output_format, list_contributors, days):
             sys.stdout.flush()
 
         commit_count = 0
-        for commit in _fetch_commits(client, workspace, repo_slug, since_iso):
-            commit_count += 1
-            author = commit.get("author", {})
-            raw: Optional[str] = author.get("raw")
-            user_info: Dict[str, Any] = author.get("user", {})
+        repo_t0 = time.monotonic()
+        try:
+            for commit in _fetch_commits(client, workspace, repo_slug, since_iso):
+                author = commit.get("author", {})
+                raw: Optional[str] = author.get("raw")
+                user_info: Dict[str, Any] = author.get("user", {})
 
-            identifier: Optional[str] = None
-            email: Optional[str] = None
-
-            if "account_id" in user_info:
-                identifier = user_info["account_id"]
-            elif raw:
-                if "<" in raw and ">" in raw:
+                # Extract identifier for dedup
+                raw_name = raw.split("<")[0].strip() if raw and "<" in raw else (raw or "")
+                email: Optional[str] = None
+                if raw and "<" in raw and ">" in raw:
                     email = raw.split("<")[-1].strip(">")
-                    identifier = email
-                else:
-                    identifier = raw
+                if exclude_bots and _is_bot(raw_name, email):
+                    bots_filtered += 1
+                    continue
 
-            if identifier:
-                if identifier not in contributors_map:
-                    contributors_map[identifier] = set()
-                if email:
-                    contributors_map[identifier].add(email)
+                identifier: Optional[str] = None
 
-        total_commits += commit_count
+                if "account_id" in user_info:
+                    identifier = user_info["account_id"]
+                elif raw:
+                    if "<" in raw and ">" in raw:
+                        identifier = email
+                    else:
+                        identifier = raw
+
+                if identifier:
+                    if identifier not in contributors_map:
+                        contributors_map[identifier] = set()
+                    if email:
+                        contributors_map[identifier].add(email)
+
+                commit_count += 1
+
+            total_commits += commit_count
+            repo_commit_counts.append((repo_name, commit_count))
+        except Exception as exc:
+            skipped_repos.append(repo_name)
+            click.echo(f"\n  Warning: skipped {repo_name}: {exc}", err=True)
+
         if output_format == "text":
             click.echo(f" {commit_count:,} commits")
+        vlog(f"{repo_name}: {commit_count:,} commits in {_elapsed(time.monotonic() - repo_t0)}")
 
     elapsed = time.monotonic() - t0
     total_contributors = len(contributors_map)
+
+    vlog(f"Scan complete in {_elapsed(elapsed)}: {total_contributors} contributors, "
+         f"{total_commits:,} commits across {total_repos} repos")
+    if exclude_bots:
+        vlog(f"Bot commits filtered: {bots_filtered}")
 
     # -- Output --------------------------------------------------------------
     if output_format == "json":
@@ -307,7 +371,10 @@ def main(workspace, user, password, output_format, list_contributors, days):
             "workspace": workspace,
             "scan_date": now.strftime('%Y-%m-%d'),
             "days": days,
-            "unique_contributors": total_contributors
+            "exclude_bots": exclude_bots,
+            "unique_contributors": total_contributors,
+            "repositories_scanned": total_repos,
+            "skipped_repos": skipped_repos,
         }
         if list_contributors:
             payload["contributors_details"] = [
@@ -315,11 +382,53 @@ def main(workspace, user, password, output_format, list_contributors, days):
                 for ident, emails in sorted(contributors_map.items())
             ]
         click.echo(json.dumps(payload, indent=2))
+    elif output_format == "markdown":
+        lines = [
+            f"# Contributors Report — Bitbucket Cloud",
+            "",
+            "| Field | Value |",
+            "|-------|-------|",
+            f"| **Workspace** | {workspace} |",
+            f"| **Scan Date** | {now.strftime('%Y-%m-%d')} |",
+            f"| **Time Window** | {days} days |",
+            f"| **Repositories Scanned** | {total_repos} |",
+            f"| **Bots Excluded** | {'Yes' if exclude_bots else 'No'} |",
+            f"| **Scan Duration** | {_elapsed(elapsed)} |",
+            "",
+            f"## Unique Contributors: {total_contributors}",
+            "",
+        ]
+        if list_contributors and contributors_map:
+            lines.append("| # | Contributor | Email(s) |")
+            lines.append("|---|-------------|----------|")
+            for i, ident in enumerate(sorted(contributors_map.keys()), 1):
+                emails_str = ", ".join(sorted(contributors_map[ident])) or "N/A"
+                lines.append(f"| {i} | {ident} | {emails_str} |")
+            lines.append("")
+        if repo_commit_counts:
+            lines.append("<details>")
+            lines.append("<summary>Per-Repository Breakdown</summary>")
+            lines.append("")
+            lines.append("| Repository | Commits |")
+            lines.append("|------------|---------|")
+            for rname, rcount in sorted(repo_commit_counts, key=lambda x: x[1], reverse=True):
+                lines.append(f"| {rname} | {rcount:,} |")
+            lines.append("")
+            lines.append("</details>")
+            lines.append("")
+        if skipped_repos:
+            lines.append(f"> **Note:** {len(skipped_repos)} repo(s) skipped due to errors: "
+                         + ", ".join(skipped_repos))
+            lines.append("")
+        lines.append("---")
+        lines.append("*Generated by [Contributors-Count](https://github.com/nicklhw/Contributors-Count)*")
+        click.echo("\n".join(lines))
     else:
         click.echo("\n" + "="*40)
         click.echo(f"Workspace: {workspace}")
         click.echo(f"Scan Date: {now.strftime('%Y-%m-%d')}")
         click.echo(f"Repositories scanned: {total_repos}")
+        click.echo(f"Bots excluded: {'Yes' if exclude_bots else 'No'}")
         click.echo("-" * 40)
         click.echo(f"Contributors in last {days} days: {total_contributors}")
         

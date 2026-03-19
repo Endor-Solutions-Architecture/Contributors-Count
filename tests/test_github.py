@@ -235,3 +235,147 @@ class TestOutputFormats:
         assert 'Organization: test-org' in result.output
         assert 'Scan Date:' in result.output
         assert 'Contributors in last 90 days:' in result.output
+
+
+class TestVerboseMode:
+    """Tests for --verbose flag."""
+
+    def test_verbose_flag_in_help(self):
+        result = CliRunner().invoke(main, ['--help'])
+        assert result.exit_code == 0
+        assert '--verbose' in result.output
+
+    @patch('github_contributors_90d._scan_repo')
+    @patch('github_contributors_90d.fetch_repos')
+    def test_verbose_outputs_to_stderr(self, mock_repos, mock_scan):
+        mock_repos.return_value = [{'full_name': 'org/repo1', 'default_branch': 'main'}]
+        mock_scan.return_value = {
+            'repo_name': 'org/repo1',
+            'branch_count': 1,
+            'commit_count': 0,
+            'contributors': {},
+        }
+
+        runner = CliRunner(mix_stderr=False)
+        result = runner.invoke(main, [
+            '--org', 'test-org',
+            '--token', 'fake-token',
+            '--format', 'json',
+            '--verbose',
+        ])
+        assert result.exit_code == 0
+        assert '[verbose]' in result.stderr
+
+
+class TestBotExclusion:
+    """Tests for --exclude-bots flag."""
+
+    def test_exclude_bots_flag_in_help(self):
+        result = CliRunner().invoke(main, ['--help'])
+        assert result.exit_code == 0
+        assert '--exclude-bots' in result.output
+
+    @patch('github_contributors_90d._scan_repo')
+    @patch('github_contributors_90d.fetch_repos')
+    def test_bots_excluded(self, mock_repos, mock_scan):
+        def scan_side_effect(*args, **kwargs):
+            exclude_bots = args[5] if len(args) > 5 else kwargs.get('exclude_bots', False)
+            if exclude_bots:
+                return {
+                    'repo_name': 'org/repo1',
+                    'branch_count': 1,
+                    'commit_count': 1,
+                    'contributors': {'alice': {'alice@example.com'}},
+                }
+            return {
+                'repo_name': 'org/repo1',
+                'branch_count': 1,
+                'commit_count': 2,
+                'contributors': {
+                    'alice': {'alice@example.com'},
+                    'dependabot[bot]': {'bot@noreply.com'},
+                },
+            }
+
+        mock_repos.return_value = [{'full_name': 'org/repo1', 'default_branch': 'main'}]
+        mock_scan.side_effect = scan_side_effect
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            '--org', 'test-org',
+            '--token', 'fake-token',
+            '--format', 'json',
+            '--exclude-bots',
+            '--default-branch-only',
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data['unique_contributors'] == 1
+
+    @patch('github_contributors_90d._scan_repo')
+    @patch('github_contributors_90d.fetch_repos')
+    def test_bots_included_by_default(self, mock_repos, mock_scan):
+        def scan_side_effect(*args, **kwargs):
+            exclude_bots = args[5] if len(args) > 5 else kwargs.get('exclude_bots', False)
+            if exclude_bots:
+                return {
+                    'repo_name': 'org/repo1',
+                    'branch_count': 1,
+                    'commit_count': 1,
+                    'contributors': {'alice': {'alice@example.com'}},
+                }
+            return {
+                'repo_name': 'org/repo1',
+                'branch_count': 1,
+                'commit_count': 2,
+                'contributors': {
+                    'alice': {'alice@example.com'},
+                    'dependabot[bot]': {'bot@noreply.com'},
+                },
+            }
+
+        mock_repos.return_value = [{'full_name': 'org/repo1', 'default_branch': 'main'}]
+        mock_scan.side_effect = scan_side_effect
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            '--org', 'test-org',
+            '--token', 'fake-token',
+            '--format', 'json',
+            '--default-branch-only',
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data['unique_contributors'] == 2
+
+
+class TestMarkdownOutput:
+    """Tests for --format markdown output."""
+
+    def test_markdown_format_in_help(self):
+        result = CliRunner().invoke(main, ['--help'])
+        assert result.exit_code == 0
+        assert 'markdown' in result.output
+
+    @patch('github_contributors_90d._scan_repo')
+    @patch('github_contributors_90d.fetch_repos')
+    def test_markdown_output_structure(self, mock_repos, mock_scan):
+        mock_repos.return_value = [{'full_name': 'org/repo1', 'default_branch': 'main'}]
+        mock_scan.return_value = {
+            'repo_name': 'org/repo1',
+            'branch_count': 1,
+            'commit_count': 0,
+            'contributors': {},
+        }
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            '--org', 'test-org',
+            '--token', 'fake-token',
+            '--format', 'markdown',
+            '--default-branch-only',
+        ])
+        assert result.exit_code == 0
+        assert '# Contributors Report' in result.output
+        assert '| Field | Value |' in result.output
+        assert 'Unique Contributors' in result.output

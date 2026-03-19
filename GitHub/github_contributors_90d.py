@@ -23,6 +23,9 @@ Usage:
   # JSON output
   python github_contributors_90d.py --org my-org --format json
 
+  # Markdown output
+  python github_contributors_90d.py --org my-org --format markdown
+
 Token permissions (fine-grained):
   Repository  -> Metadata: Read-only, Contents: Read-only
   Organization -> Members: Read-only
@@ -338,16 +341,21 @@ def _scan_repo(
 @click.option('--org', '-o', required=True, help='GitHub organization name.')
 @click.option('--token', '-t', help='GitHub Personal Access Token. Overrides GITHUB_TOKEN env var.')
 @click.option('--base-url', default=DEFAULT_BASE_URL, help='GitHub API Base URL.')
-@click.option('--format', 'output_format', type=click.Choice(['text', 'json']), default='text', help='Output format.')
+@click.option('--format', 'output_format', type=click.Choice(['text', 'json', 'markdown']), default='text', help='Output format.')
 @click.option('--max-repos', type=int, help='Limit the number of repositories to process (for testing/large orgs).')
 @click.option('--list-contributors', is_flag=True, help='List individual contributors and their emails.')
 @click.option('--default-branch-only', is_flag=True, help='Only count commits from each repository\'s default branch.')
 @click.option('--exclude-bots', is_flag=True, help='Exclude bot accounts from the contributor count.')
+@click.option('--verbose', '-v', is_flag=True, help='Print API diagnostics to stderr.')
 @click.option('--days', '-d', type=int, default=90, show_default=True, help='Number of days to look back for contributions.')
-def main(org, token, base_url, output_format, max_repos, list_contributors, default_branch_only, exclude_bots, days):
+def main(org, token, base_url, output_format, max_repos, list_contributors, default_branch_only, exclude_bots, verbose, days):
     """
     Calculate unique contributors for a GitHub Org over a configurable time window.
     """
+    def vlog(msg: str) -> None:
+        if verbose:
+            click.echo(f"  [verbose] {msg}", err=True)
+
     if days < 1:
         click.echo("Error: --days must be at least 1.", err=True)
         sys.exit(1)
@@ -363,6 +371,7 @@ def main(org, token, base_url, output_format, max_repos, list_contributors, defa
         )
 
     client = GitHubClient(token, base_url)
+    vlog(f"org={org}, days={days}, default_branch_only={default_branch_only}, exclude_bots={exclude_bots}")
 
     t0 = time.monotonic()
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -383,6 +392,7 @@ def main(org, token, base_url, output_format, max_repos, list_contributors, defa
         sys.exit(1)
 
     total_repos = len(repos)
+    vlog(f"fetched {total_repos} repositories")
     if output_format == "text":
         click.echo(f"  Found {total_repos} repositories.\n")
 
@@ -401,6 +411,8 @@ def main(org, token, base_url, output_format, max_repos, list_contributors, defa
     completed = 0
     total_commits = 0
     workers = min(DEFAULT_WORKERS, total_repos)
+    repo_commit_counts: List[Tuple[str, int]] = []
+    skipped_repos: List[str] = []
 
     try:
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -418,11 +430,14 @@ def main(org, token, base_url, output_format, max_repos, list_contributors, defa
                 try:
                     result = future.result()
                 except Exception as exc:
+                    skipped_repos.append(futures[future]["full_name"])
                     if output_format == "text":
                         click.echo(
                             f"  Warning: repo scan failed: {exc}", err=True,
                         )
                     continue
+
+                repo_commit_counts.append((result["repo_name"], result["commit_count"]))
 
                 # Merge results into global map
                 for login, emails in result["contributors"].items():
@@ -454,6 +469,7 @@ def main(org, token, base_url, output_format, max_repos, list_contributors, defa
 
     elapsed = time.monotonic() - t0
     total_contributors = len(global_contribs)
+    vlog(f"scan complete: {total_contributors} contributors, {total_commits:,} commits in {_elapsed(elapsed)}")
 
     # -- Output --------------------------------------------------------------
     if output_format == "json":
@@ -463,7 +479,9 @@ def main(org, token, base_url, output_format, max_repos, list_contributors, defa
             "days": days,
             "default_branch_only": default_branch_only,
             "exclude_bots": exclude_bots,
-            "unique_contributors": total_contributors
+            "repositories_scanned": len(repo_commit_counts),
+            "unique_contributors": total_contributors,
+            "skipped_repos": skipped_repos,
         }
         if list_contributors:
             payload["contributors_details"] = [
@@ -471,6 +489,48 @@ def main(org, token, base_url, output_format, max_repos, list_contributors, defa
                 for login, emails in sorted(global_contribs.items())
             ]
         click.echo(json.dumps(payload, indent=2))
+    elif output_format == "markdown":
+        lines = [
+            f"# Contributors Report — GitHub",
+            "",
+            "| Field | Value |",
+            "|-------|-------|",
+            f"| **Organization** | {org} |",
+            f"| **Scan Date** | {now.strftime('%Y-%m-%d')} |",
+            f"| **Time Window** | {days} days |",
+            f"| **Repositories Scanned** | {total_repos} |",
+            f"| **Default Branch Only** | {'Yes' if default_branch_only else 'No'} |",
+            f"| **Bots Excluded** | {'Yes' if exclude_bots else 'No'} |",
+            f"| **Scan Duration** | {_elapsed(elapsed)} |",
+            "",
+            f"## Unique Contributors: {total_contributors}",
+            "",
+        ]
+        if list_contributors and global_contribs:
+            lines.append("| # | Contributor | Email(s) |")
+            lines.append("|---|-------------|----------|")
+            for i, login in enumerate(sorted(global_contribs.keys()), 1):
+                emails_str = ", ".join(sorted(global_contribs[login])) or "N/A"
+                lines.append(f"| {i} | {login} | {emails_str} |")
+            lines.append("")
+        if repo_commit_counts:
+            lines.append("<details>")
+            lines.append("<summary>Per-Repository Breakdown</summary>")
+            lines.append("")
+            lines.append("| Repository | Commits |")
+            lines.append("|------------|---------|")
+            for rname, rcount in sorted(repo_commit_counts, key=lambda x: x[1], reverse=True):
+                lines.append(f"| {rname} | {rcount:,} |")
+            lines.append("")
+            lines.append("</details>")
+            lines.append("")
+        if skipped_repos:
+            lines.append(f"> **Note:** {len(skipped_repos)} repo(s) skipped due to errors: "
+                         + ", ".join(skipped_repos))
+            lines.append("")
+        lines.append("---")
+        lines.append("*Generated by [Contributors-Count](https://github.com/nicklhw/Contributors-Count)*")
+        click.echo("\n".join(lines))
     else:
         click.echo("\n" + "="*40)
         click.echo(f"Organization: {org}")
