@@ -1,59 +1,53 @@
-# Azure DevOps Contributors 90-Day Count
+# Azure DevOps Contributors Count
 
-A CLI tool to calculate the number of unique contributing developers in an Azure DevOps Project over the last 90 days.
+Count unique contributing developers across an Azure DevOps project over a configurable time window.
 
 ## Features
 
-- **90-Day Count**: Calculates unique contributors (by email) for the last 90 days.
-- **Project-Wide**: Scans all Git repositories within a project.
-- **Detailed Listing**: Optionally lists contributor emails.
-- **Output Formats**: Human-readable text or JSON.
+- **Configurable time window**: Default 90 days, adjustable with `--days`
+- **Project-wide scanning**: Scans all Git repositories within a project
+- **Bot exclusion**: Filter out service accounts with `--exclude-bots`
+- **Continuation-token pagination**: Handles large organizations
+- **Three output formats**: Text, JSON, and Markdown reports
 
-## Requirements
-
-- Python 3.6+
-- Dependencies: `requests`, `click`
-
-## Installation
-
-1.  Install dependencies:
-
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-## Usage
-
-### Prerequisites
-
-You need a **Personal Access Token (PAT)** with **Code (Read)** scope.
-
-### Basic Usage
-
-1.  **Set the token as an environment variable:**
-
-    ```bash
-    export ADO_TOKEN=your_pat_here
-    ```
-
-2.  **Run the script:**
-
-    ```bash
-    python ado_contributors_90d.py --org https://dev.azure.com/myorg --project myproject
-    ```
-
-### JSON Output
+## Quick Start
 
 ```bash
-python ado_contributors_90d.py --org https://dev.azure.com/myorg --project myproject --format json
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+export ADO_TOKEN=your_pat_here
+python3 ado_contributors_90d.py --org https://dev.azure.com/myorg --project myproject
 ```
 
-**Output:**
-```json
-{
-  "org": "https://dev.azure.com/myorg",
-  "project": "myproject",
-  "scan_date": "2025-12-02",
-  "contributors_90d": 8
-}
+## Options
+
+| Flag | Description |
+|------|-------------|
+| `--org` / `-o` | Organization URL **(required)**, e.g. `https://dev.azure.com/myorg` |
+| `--project` / `-p` | Project name **(required)** |
+| `--token` / `-t` | PAT (overrides `ADO_TOKEN` env var) |
+| `--days` / `-d` | Days to look back (default: 90) |
+| `--exclude-bots` | Exclude bot/service accounts |
+| `--verbose` / `-v` | Print API diagnostics to stderr |
+| `--list-contributors` | Show contributor details |
+| `--format` | `text`, `json`, or `markdown` |
+
+## Token Permissions
+
+Create a PAT with `Code (Read)` scope.
+
+## Examples
+
+```bash
+# 30-day window with markdown report
+python3 ado_contributors_90d.py --org https://dev.azure.com/myorg --project myproj --days 30 --format markdown
+
+# JSON output, exclude bots
+python3 ado_contributors_90d.py --org https://dev.azure.com/myorg --project myproj --format json --exclude-bots
+
+# Debug with verbose mode
+python3 ado_contributors_90d.py --org https://dev.azure.com/myorg --project myproj --verbose 2>debug.log
 ```
+
+See the [root README](../README.md) for full documentation.

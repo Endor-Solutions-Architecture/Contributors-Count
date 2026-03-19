@@ -1,142 +1,67 @@
-# GitHub Contributors in the last 90 days
+# GitHub Contributors Count
 
-A CLI tool to calculate the number of unique contributing developers in a GitHub organization over the last 90 days.
+Count unique contributing developers across a GitHub organization over a configurable time window.
 
 ## Features
 
-- **90-Day Count**: Calculates unique contributors for the last 90 days.
-- **All Branches by Default**: Scans all branches in each repository to capture contributors on feature branches.
-- **Default Branch Only Mode**: Optionally restrict scanning to only the default branch (e.g., `main`, `master`).
-- **Detailed Listing**: Optionally lists contributor handles and emails.
-- **Output Formats**: Human-readable text or JSON for automation.
-- **Secure**: Supports Personal Access Tokens (PAT) for private organizations.
+- **Configurable time window**: Default 90 days, adjustable with `--days`
+- **All-branch scanning**: Scans all branches by default to capture feature-branch contributors
+- **Default branch mode**: Optionally restrict to default branch with `--default-branch-only`
+- **Bot exclusion**: Filter out bot accounts with `--exclude-bots`
+- **Concurrent scanning**: 4 workers for faster execution on large orgs
+- **GitHub Enterprise**: Supports GHE Server via `--base-url`
+- **Three output formats**: Text, JSON, and Markdown reports
 
-## Requirements
-
-- Python 3.6+
-- Dependencies: `requests`, `click`
-
-## Installation
-
-1.  Clone this repository or download the script.
-2.  Install dependencies:
-
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-## Usage
-
-### Basic Usage (Public Organizations)
-
-For public organizations, you can run the script without a token (subject to lower API rate limits).
+## Quick Start
 
 ```bash
-python github_contributors_90d.py --org <org-name>
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+export GITHUB_TOKEN=your_token_here
+python3 github_contributors_90d.py --org my-org
 ```
 
-Example:
-```bash
-python github_contributors_90d.py --org google
-```
+## Options
 
-### Private Organizations (or higher rate limits)
+| Flag | Description |
+|------|-------------|
+| `--org` / `-o` | GitHub organization name **(required)** |
+| `--token` / `-t` | PAT (overrides `GITHUB_TOKEN` env var) |
+| `--base-url` | GitHub API base URL (for Enterprise Server) |
+| `--days` / `-d` | Days to look back (default: 90) |
+| `--default-branch-only` | Only count commits from each repo's default branch |
+| `--exclude-bots` | Exclude bot accounts |
+| `--max-repos` | Limit number of repositories (useful for testing) |
+| `--verbose` / `-v` | Print API diagnostics to stderr |
+| `--list-contributors` | Show contributor details |
+| `--format` | `text`, `json`, or `markdown` |
 
-For private organizations, or to avoid rate limits on public orgs, use a GitHub Personal Access Token (PAT).
+## Token Permissions
 
-1.  **Set the token as an environment variable (Recommended):**
+**Fine-grained tokens (recommended):**
+- Repository Permissions: `Metadata: Read-only`, `Contents: Read-only`
+- Organization Permissions: `Members: Read-only`
 
-    ```bash
-    export GITHUB_TOKEN=your_token_here
-    # On Windows PowerShell:
-    # $env:GITHUB_TOKEN="your_token_here"
-    ```
+**Classic tokens:** `repo` scope for private repos, or no scopes for public orgs.
 
-2.  **Run the script:**
-
-    ```bash
-    python github_contributors_90d.py --org <org-name>
-    ```
-
-Alternatively, pass the token via the `--token` flag:
-```bash
-python github_contributors_90d.py --org <org-name> --token your_token_here
-```
-
-### Detailed Contributor List
-
-To see the list of individual contributors and their emails:
+## Examples
 
 ```bash
-python github_contributors_90d.py --org google --list-contributors
+# 30-day window, exclude bots, list contributors
+python3 github_contributors_90d.py --org my-org --days 30 --exclude-bots --list-contributors
+
+# JSON output for automation
+python3 github_contributors_90d.py --org my-org --format json
+
+# Markdown report
+python3 github_contributors_90d.py --org my-org --format markdown > report.md
+
+# GitHub Enterprise Server
+python3 github_contributors_90d.py --org my-org --base-url https://github.mycompany.com/api/v3
+
+# Debug with verbose mode
+python3 github_contributors_90d.py --org my-org --verbose 2>debug.log
 ```
 
-### Default Branch Only
-
-By default, the script counts contributors from all branches. To only count commits from each repository's default branch (e.g., `main` or `master`):
-
-```bash
-python github_contributors_90d.py --org google --default-branch-only
-```
-
-This is useful when you want to exclude contributors who only have commits on feature branches that haven't been merged yet.
-
-### Exclude Bots
-
-To exclude bot accounts from the contributor count:
-
-```bash
-python github_contributors_90d.py --org google --exclude-bots
-```
-
-This filters out:
-- GitHub App bots (accounts with `type: "Bot"` in the API)
-- Accounts with `[bot]` suffix in their username
-
-### JSON Output
-
-For integration with other tools, use the JSON format:
-
-```bash
-python github_contributors_90d.py --org google --format json
-```
-
-**Output:**
-```json
-{
-  "org": "google",
-  "scan_date": "2025-12-02",
-  "default_branch_only": false,
-  "exclude_bots": false,
-  "contributors_90d": 450
-}
-```
-
-
-
-## Permissions & Scopes
-
-The required permissions for your Personal Access Token (PAT) depend on the organization type:
-
-### Public Organizations
-- **No scopes required.** A token with no scopes selected is sufficient to increase your rate limit.
-
-### Private Organizations
-
-**Fine-grained PATs:**
-If using a Fine-grained token, you do not select "scopes". Instead, select the organization and grant these specific permissions:
-1.  **Repository access**: Select "All repositories" (or the specific ones you want to count).
-2.  **Repository permissions**:
-    - **`Contents`**: **Read-only** (to fetch commits).
-    - **`Metadata`**: **Read-only** (to list repositories).
-3.  **Organization permissions**:
-    - None strictly required for this script if you have Repository access, but **`Members` (Read-only)** is good practice if you run into visibility issues.
-
-## Help
-
-View all available options:
-
-```bash
-python github_contributors_90d.py --help
-```
-
+See the [root README](../README.md) for full documentation.

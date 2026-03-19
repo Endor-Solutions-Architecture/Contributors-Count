@@ -1,80 +1,92 @@
-# Bitbucket Contributors 90-Day Count
+# Bitbucket Contributors Count
 
-A CLI tool to calculate the number of unique contributing developers in a Bitbucket Workspace over the last 90 days.
+Count unique contributing developers across a Bitbucket workspace (Cloud) or project (Server/Data Center) over a configurable time window.
 
-## Features
+## Bitbucket Cloud
 
-- **90-Day Count**: Calculates unique contributors for the last 90 days.
-- **Workspace-Wide**: Scans all repositories within a workspace.
-- **Detailed Listing**: Optionally lists contributor emails.
-- **Output Formats**: Human-readable text or JSON.
+### Features
 
-## Requirements
+- **Configurable time window**: Default 90 days, adjustable with `--days`
+- **Workspace-wide scanning**: Scans all repositories within a workspace
+- **Bot exclusion**: Filter out service accounts with `--exclude-bots`
+- **Smart deduplication**: Uses `account_id` (best), email, or raw author string
+- **Three output formats**: Text, JSON, and Markdown reports
 
-- Python 3.6+
-- Dependencies: `requests`, `click`
-
-## Installation
-
-1.  Install dependencies:
-
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-## Usage
-
-### Prerequisites
-
-You need an **App Password** with **Repositories: Read** permission.
-
-### Basic Usage
-
-1.  **Set credentials as environment variables:**
-
-    ```bash
-    export BITBUCKET_USER=your_username
-    export BITBUCKET_PASSWORD=your_app_password
-    ```
-
-2.  **Run the script:**
-
-    ```bash
-    python bitbucket_contributors_90d.py --workspace my-workspace
-    ```
-
-### JSON Output
+### Quick Start
 
 ```bash
-python bitbucket_contributors_90d.py --workspace my-workspace --format json
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+export BITBUCKET_USER=your_username
+export BITBUCKET_PASSWORD=your_app_password
+python3 bitbucket_contributors_90d.py --workspace my-workspace
 ```
 
-**Output:**
-```json
-{
-  "workspace": "my-workspace",
-  "scan_date": "2025-12-02",
-  "contributors_90d": 5
-}
+### Options
+
+| Flag | Description |
+|------|-------------|
+| `--workspace` / `-w` | Workspace ID/slug **(required)** |
+| `--user` / `-u` | Username (overrides `BITBUCKET_USER`) |
+| `--password` / `-p` | App Password (overrides `BITBUCKET_PASSWORD`) |
+| `--days` / `-d` | Days to look back (default: 90) |
+| `--exclude-bots` | Exclude bot/service accounts |
+| `--verbose` / `-v` | Print API diagnostics to stderr |
+| `--list-contributors` | Show contributor details |
+| `--format` | `text`, `json`, or `markdown` |
+
+### Token Permissions
+
+Create an **App Password** with `Repositories: Read` permission.
+
+---
+
+## Bitbucket Server / Data Center
+
+### Features
+
+- **Configurable time window**: Default 90 days, adjustable with `--days`
+- **Project-level scanning**: Scans all repos within a project
+- **Bot exclusion**: Filter out service accounts with `--exclude-bots`
+- **Efficient pagination**: Stops paginating commits once it reaches the time window boundary
+- **Three output formats**: Text, JSON, and Markdown reports
+
+### Quick Start
+
+```bash
+export BITBUCKET_USER=your_username
+export BITBUCKET_PASSWORD=your_password
+python3 bitbucket_server_contributors_90d.py --project MYPROJ --url https://bitbucket.mycompany.com
 ```
 
-## Bitbucket Server (Data Center)
+### Options
 
-For self-hosted Bitbucket Server / Data Center instances, use the `bitbucket_server_contributors_90d.py` script.
+| Flag | Description |
+|------|-------------|
+| `--project` / `-p` | Project Key **(required)** |
+| `--url` | Server base URL **(required)** |
+| `--user` / `-u` | Username (overrides `BITBUCKET_USER`) |
+| `--password` / `-pw` | Password/token (overrides `BITBUCKET_PASSWORD`) |
+| `--days` / `-d` | Days to look back (default: 90) |
+| `--exclude-bots` | Exclude bot/service accounts |
+| `--verbose` / `-v` | Print API diagnostics to stderr |
+| `--list-contributors` | Show contributor details |
+| `--format` | `text`, `json`, or `markdown` |
 
-### Usage
+---
 
-1.  **Set credentials and URL:**
+## Examples
 
-    ```bash
-    export BITBUCKET_SERVER_URL=https://bitbucket.mycompany.com
-    export BITBUCKET_USER=myuser
-    export BITBUCKET_PASSWORD=mypassword
-    ```
+```bash
+# Bitbucket Cloud: 30-day window, markdown report
+python3 bitbucket_contributors_90d.py --workspace my-ws --days 30 --format markdown
 
-2.  **Run the script:**
+# Bitbucket Server: exclude bots, JSON output
+python3 bitbucket_server_contributors_90d.py --project MYPROJ --url https://bb.example.com --exclude-bots --format json
 
-    ```bash
-    python bitbucket_server_contributors_90d.py --project MYPROJ --url https://bitbucket.mycompany.com
-    ```
+# Debug with verbose mode
+python3 bitbucket_contributors_90d.py --workspace my-ws --verbose 2>debug.log
+```
 
+See the [root README](../README.md) for full documentation.
