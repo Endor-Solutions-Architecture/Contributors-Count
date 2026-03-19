@@ -1,8 +1,10 @@
 # Contributing Developers Count
 
+All scripts support a configurable time window via `--days` (default: 90). For example, `--days 30` counts contributors from the last 30 days.
+
 ## Github
 
-- Counts the number of contributing developers within the last 90 days of a given GitHub Organization
+- Counts the number of contributing developers within a configurable time window (default: 90 days) of a given GitHub Organization
 - Scans all branches by default to capture contributors on feature branches (not just merged code)
 - Supports filtering to only count commits from each repository's default branch with `--default-branch-only`
 - Prints the name of each GitHub user along with their email addresses
@@ -25,6 +27,7 @@
 
 - `--org` / `-o`: GitHub organization name (required)
 - `--token` / `-t`: GitHub PAT (overrides `GITHUB_TOKEN` env var)
+- `--days` / `-d`: Number of days to look back (default: 90)
 - `--default-branch-only`: Only count commits from each repository's default branch
 - `--exclude-bots`: Exclude bot accounts from the contributor count
 - `--list-contributors`: List individual contributors and their emails
@@ -33,7 +36,7 @@
 
 ## Gitlab
 
-- Counts the number of contributing developers within the last 90 days across all accessible GitLab groups and projects
+- Counts the number of contributing developers within a configurable time window (default: 90 days) across all accessible GitLab groups and projects
 - Deduplicates contributors by email address across groups and standalone projects
 - Prints the groups and projects that are being analyzed
 - Prints the contributor count for individual groups and standalone projects
@@ -50,6 +53,7 @@
 
 - `--url` / `-u`: GitLab instance URL (default: `https://gitlab.com`). Use this for self-hosted instances.
 - `--token` / `-t`: GitLab Personal Access Token (overrides `GITLAB_TOKEN` env var)
+- `--days` / `-d`: Number of days to look back (default: 90)
 - `--list-contributors`: List individual contributors and their emails
 - `--format`: Output format (`text` or `json`)
 
@@ -59,7 +63,7 @@ Note: The token used as GITLAB_TOKEN should have `read_api` and `read_user` acce
 
 ### Bitbucket Cloud
 
-- Counts the number of unique contributing developers within the last 90 days of a given Bitbucket Workspace
+- Counts the number of unique contributing developers within a configurable time window (default: 90 days) of a given Bitbucket Workspace
 - Supports text and JSON output formats
 - Requires an App Password with `Repositories: Read` permission
 
@@ -75,12 +79,13 @@ Note: The token used as GITLAB_TOKEN should have `read_api` and `read_user` acce
 - `--workspace` / `-w`: Bitbucket Workspace ID/Slug (required)
 - `--user` / `-u`: Bitbucket username (overrides `BITBUCKET_USER` env var)
 - `--password` / `-p`: Bitbucket App Password (overrides `BITBUCKET_PASSWORD` env var)
+- `--days` / `-d`: Number of days to look back (default: 90)
 - `--list-contributors`: List individual contributors and their emails
 - `--format`: Output format (`text` or `json`)
 
 ### Bitbucket Server / Data Center
 
-- Counts the number of unique contributing developers within the last 90 days of a given Bitbucket Server Project
+- Counts the number of unique contributing developers within a configurable time window (default: 90 days) of a given Bitbucket Server Project
 - Uses the Bitbucket Server REST API (1.0)
 
 #### Running the script:
@@ -94,12 +99,13 @@ Note: The token used as GITLAB_TOKEN should have `read_api` and `read_user` acce
 - `--url`: Bitbucket Server Base URL (required)
 - `--user` / `-u`: Username (overrides `BITBUCKET_USER` env var)
 - `--password` / `-pw`: Password/Token (overrides `BITBUCKET_PASSWORD` env var)
+- `--days` / `-d`: Number of days to look back (default: 90)
 - `--list-contributors`: List individual contributors and their emails
 - `--format`: Output format (`text` or `json`)
 
 ## Azure DevOps
 
-- Counts the number of unique contributing developers within the last 90 days of a given Azure DevOps Project
+- Counts the number of unique contributing developers within a configurable time window (default: 90 days) of a given Azure DevOps Project
 - Scans all Git repositories within the project
 - Requires a Personal Access Token (PAT) with `Code (Read)` scope
 
@@ -115,6 +121,7 @@ Note: The token used as GITLAB_TOKEN should have `read_api` and `read_user` acce
 - `--org` / `-o`: Azure DevOps Org URL (required, e.g. `https://dev.azure.com/myorg`)
 - `--project` / `-p`: Project name (required)
 - `--token` / `-t`: Personal Access Token (overrides `ADO_TOKEN` env var)
+- `--days` / `-d`: Number of days to look back (default: 90)
 - `--list-contributors`: List individual contributors and their emails
 - `--format`: Output format (`text` or `json`)
 

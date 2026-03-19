@@ -4,7 +4,7 @@ GitLab Contributors Count Tool
 
 Purpose:
   Calculates the number of unique contributing developers across all accessible
-  GitLab groups and projects over the last 90 days.
+  GitLab groups and projects over a configurable time window (default: 90 days).
 
 Requirements:
   Python 3.6+
@@ -20,6 +20,9 @@ Usage:
 
   # Self-hosted GitLab
   python gitlab_contributor_count.py --url https://gitlab.mycompany.com
+
+  # Custom time window (e.g., 30 days)
+  python gitlab_contributor_count.py --days 30
 
   # JSON output
   python gitlab_contributor_count.py --format json
@@ -92,11 +95,16 @@ def process_commits(project, since_iso: str, contributors: Dict[str, dict],
 @click.option('--format', 'output_format', type=click.Choice(['text', 'json']), default='text',
               help='Output format.')
 @click.option('--list-contributors', is_flag=True, help='List individual contributors and their emails.')
-def main(url, token, output_format, list_contributors):
+@click.option('--days', '-d', type=int, default=90, show_default=True, help='Number of days to look back for contributions.')
+def main(url, token, output_format, list_contributors, days):
     """
     Calculate unique contributors across all accessible GitLab groups and projects
-    over the last 90 days.
+    over a configurable time window.
     """
+    if days < 1:
+        click.echo("Error: --days must be at least 1.", err=True)
+        sys.exit(1)
+
     if not token:
         token = os.environ.get(ENV_VAR_TOKEN)
 
@@ -107,8 +115,8 @@ def main(url, token, output_format, list_contributors):
     gl = gitlab.Gitlab(url, private_token=token)
 
     now = datetime.datetime.now(datetime.timezone.utc)
-    ninety_days_ago = now - datetime.timedelta(days=90)
-    since_iso = ninety_days_ago.isoformat()
+    start_date = now - datetime.timedelta(days=days)
+    since_iso = start_date.isoformat()
 
     # group_name -> { identifier -> commit_info }
     all_contributors: Dict[str, Dict[str, dict]] = {}
@@ -170,13 +178,14 @@ def main(url, token, output_format, list_contributors):
         json_output = {
             "gitlab_url": url,
             "scan_date": now.strftime('%Y-%m-%d'),
-            "contributors_90d": total_contributors,
+            "days": days,
+            "unique_contributors": total_contributors,
             "groups": {}
         }
 
         for group_name, contributors in all_contributors.items():
             json_output["groups"][group_name] = {
-                "contributors_90d": len(contributors)
+                "unique_contributors": len(contributors)
             }
 
         if list_contributors:
@@ -209,7 +218,7 @@ def main(url, token, output_format, list_contributors):
         click.echo(f"GitLab URL: {url}")
         click.echo(f"Scan Date: {now.strftime('%Y-%m-%d')}")
         click.echo("-" * 40)
-        click.echo(f"Total unique contributors in last 90 days: {total_contributors}")
+        click.echo(f"Total unique contributors in last {days} days: {total_contributors}")
 
         if list_contributors:
             click.echo("-" * 40)

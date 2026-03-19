@@ -4,7 +4,7 @@ Bitbucket Contributors Count Tool
 
 Purpose:
   Calculates the number of unique contributing developers in a Bitbucket Workspace
-  over the last 90 days.
+  over a configurable time window (default: 90 days).
 
 Requirements:
   Python 3.6+
@@ -18,6 +18,9 @@ Usage:
   export BITBUCKET_USER=myuser
   export BITBUCKET_PASSWORD=my_app_password
   python bitbucket_contributors_90d.py --workspace myworkspace
+
+  # Custom time window (e.g., 30 days)
+  python bitbucket_contributors_90d.py --workspace myworkspace --days 30
 
   # JSON output
   python bitbucket_contributors_90d.py --workspace myworkspace --format json
@@ -122,10 +125,15 @@ def fetch_commits(client: BitbucketClient, workspace: str, repo_slug: str, since
 @click.option('--password', '-p', help='Bitbucket App Password. Overrides BITBUCKET_PASSWORD env var.')
 @click.option('--format', 'output_format', type=click.Choice(['text', 'json']), default='text', help='Output format.')
 @click.option('--list-contributors', is_flag=True, help='List individual contributors and their emails.')
-def main(workspace, user, password, output_format, list_contributors):
+@click.option('--days', '-d', type=int, default=90, show_default=True, help='Number of days to look back for contributions.')
+def main(workspace, user, password, output_format, list_contributors, days):
     """
-    Calculate unique contributors for a Bitbucket Workspace over the last 90 days.
+    Calculate unique contributors for a Bitbucket Workspace over a configurable time window.
     """
+    if days < 1:
+        click.echo("Error: --days must be at least 1.", err=True)
+        sys.exit(1)
+
     if not user:
         user = os.environ.get(ENV_VAR_USER)
     if not password:
@@ -137,9 +145,7 @@ def main(workspace, user, password, output_format, list_contributors):
 
     client = BitbucketClient(user, password)
 
-    # Calculate window (90 days)
     now = datetime.datetime.now(datetime.timezone.utc)
-    days = 90
     start_date = now - datetime.timedelta(days=days)
     
     since_iso = start_date.isoformat()
@@ -211,7 +217,8 @@ def main(workspace, user, password, output_format, list_contributors):
         json_output = {
             "workspace": workspace,
             "scan_date": now.strftime('%Y-%m-%d'),
-            "contributors_90d": total_contributors
+            "days": days,
+            "unique_contributors": total_contributors
         }
         
         if list_contributors:
@@ -227,7 +234,7 @@ def main(workspace, user, password, output_format, list_contributors):
         click.echo(f"Scan Date: {now.strftime('%Y-%m-%d')}")
         click.echo(f"Repositories scanned: {repo_count}")
         click.echo("-" * 40)
-        click.echo(f"Contributors in last 90 days: {total_contributors}")
+        click.echo(f"Contributors in last {days} days: {total_contributors}")
         
         if list_contributors:
             click.echo("-" * 40)

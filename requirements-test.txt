@@ -1,0 +1,4 @@
+pytest
+click
+requests
+python-gitlab>=3.12.0

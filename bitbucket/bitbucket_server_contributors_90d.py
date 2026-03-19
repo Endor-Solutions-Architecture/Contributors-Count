@@ -4,7 +4,7 @@ Bitbucket Server (Data Center) Contributors Count Tool
 
 Purpose:
   Calculates the number of unique contributing developers in a Bitbucket Server Project
-  over the last 90 days.
+  over a configurable time window (default: 90 days).
 
 Requirements:
   Python 3.6+
@@ -19,6 +19,9 @@ Usage:
   export BITBUCKET_USER=myuser
   export BITBUCKET_PASSWORD=mypassword
   python bitbucket_server_contributors_90d.py --project MYPROJ
+
+  # Custom time window (e.g., 30 days)
+  python bitbucket_server_contributors_90d.py --project MYPROJ --days 30
 
   # JSON output
   python bitbucket_server_contributors_90d.py --project MYPROJ --format json
@@ -159,10 +162,15 @@ def fetch_commits(client: BitbucketServerClient, project_key: str, repo_slug: st
 @click.option('--password', '-pw', help='Password/Token. Overrides BITBUCKET_PASSWORD env var.')
 @click.option('--format', 'output_format', type=click.Choice(['text', 'json']), default='text', help='Output format.')
 @click.option('--list-contributors', is_flag=True, help='List individual contributors and their emails.')
-def main(project, url, user, password, output_format, list_contributors):
+@click.option('--days', '-d', type=int, default=90, show_default=True, help='Number of days to look back for contributions.')
+def main(project, url, user, password, output_format, list_contributors, days):
     """
-    Calculate unique contributors for a Bitbucket Server Project over the last 90 days.
+    Calculate unique contributors for a Bitbucket Server Project over a configurable time window.
     """
+    if days < 1:
+        click.echo("Error: --days must be at least 1.", err=True)
+        sys.exit(1)
+
     if not user:
         user = os.environ.get(ENV_VAR_USER)
     if not password:
@@ -174,9 +182,7 @@ def main(project, url, user, password, output_format, list_contributors):
 
     client = BitbucketServerClient(url, user, password)
 
-    # Calculate window (90 days)
     now = datetime.datetime.now(datetime.timezone.utc)
-    days = 90
     start_date = now - datetime.timedelta(days=days)
     
     # Bitbucket Server uses milliseconds timestamp
@@ -231,7 +237,8 @@ def main(project, url, user, password, output_format, list_contributors):
         json_output = {
             "project": project,
             "scan_date": now.strftime('%Y-%m-%d'),
-            "contributors_90d": total_contributors
+            "days": days,
+            "unique_contributors": total_contributors
         }
         
         if list_contributors:
@@ -247,7 +254,7 @@ def main(project, url, user, password, output_format, list_contributors):
         click.echo(f"Scan Date: {now.strftime('%Y-%m-%d')}")
         click.echo(f"Repositories scanned: {repo_count}")
         click.echo("-" * 40)
-        click.echo(f"Contributors in last 90 days: {total_contributors}")
+        click.echo(f"Contributors in last {days} days: {total_contributors}")
         
         if list_contributors:
             click.echo("-" * 40)

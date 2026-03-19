@@ -4,7 +4,7 @@ GitHub Contributors Count Tool
 
 Purpose:
   Calculates the number of unique contributing developers in a GitHub organization
-  over the last 90 days.
+  over a configurable time window (default: 90 days).
 
 Requirements:
   Python 3.6+
@@ -20,6 +20,9 @@ Usage:
   # Private org or higher rate limits (recommended)
   export GITHUB_TOKEN=ghp_...
   python github_contributors_90d.py --org my-org
+
+  # Custom time window (e.g., 30 days)
+  python github_contributors_90d.py --org my-org --days 30
 
   # JSON output
   python github_contributors_90d.py --org my-org --format json
@@ -156,10 +159,15 @@ def fetch_commits(client: GitHubClient, repo_full_name: str, since: str, until: 
 @click.option('--list-contributors', is_flag=True, help='List individual contributors and their emails.')
 @click.option('--default-branch-only', is_flag=True, help='Only count commits from each repository\'s default branch.')
 @click.option('--exclude-bots', is_flag=True, help='Exclude bot accounts from the contributor count.')
-def main(org, token, base_url, output_format, max_repos, list_contributors, default_branch_only, exclude_bots):
+@click.option('--days', '-d', type=int, default=90, show_default=True, help='Number of days to look back for contributions.')
+def main(org, token, base_url, output_format, max_repos, list_contributors, default_branch_only, exclude_bots, days):
     """
-    Calculate unique contributors for a GitHub Org over the last 90 days.
+    Calculate unique contributors for a GitHub Org over a configurable time window.
     """
+    if days < 1:
+        click.echo("Error: --days must be at least 1.", err=True)
+        sys.exit(1)
+
     # Resolve token
     if not token:
         token = os.environ.get(ENV_VAR_TOKEN)
@@ -169,9 +177,7 @@ def main(org, token, base_url, output_format, max_repos, list_contributors, defa
 
     client = GitHubClient(token, base_url)
 
-    # Calculate window (90 days)
     now = datetime.datetime.now(datetime.timezone.utc)
-    days = 90
     start_date = now - datetime.timedelta(days=days)
     
     # ISO 8601 format for GitHub API
@@ -257,9 +263,10 @@ def main(org, token, base_url, output_format, max_repos, list_contributors, defa
         json_output = {
             "org": org,
             "scan_date": now.strftime('%Y-%m-%d'),
+            "days": days,
             "default_branch_only": default_branch_only,
             "exclude_bots": exclude_bots,
-            "contributors_90d": total_contributors
+            "unique_contributors": total_contributors
         }
         
         if list_contributors:
@@ -277,7 +284,7 @@ def main(org, token, base_url, output_format, max_repos, list_contributors, defa
         click.echo(f"Default branch only: {'Yes' if default_branch_only else 'No'}")
         click.echo(f"Bots excluded: {'Yes' if exclude_bots else 'No'}")
         click.echo("-" * 40)
-        click.echo(f"Contributors in last 90 days: {total_contributors}")
+        click.echo(f"Contributors in last {days} days: {total_contributors}")
         
         if list_contributors:
             click.echo("-" * 40)
